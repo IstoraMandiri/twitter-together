@@ -12,6 +12,7 @@ const { existsSync } = __nccwpck_require__(7147);
 const { join } = __nccwpck_require__(1017);
 const { parseTweet } = __nccwpck_require__(6223);
 const { load } = __nccwpck_require__(1917);
+const parseTweetId = __nccwpck_require__(8045);
 
 const OPTION_REGEX = /^\(\s?\)\s+/;
 const FRONT_MATTER_REGEX = new RegExp(
@@ -93,6 +94,9 @@ function parseTweetFileContent(text, dir, isThread = false) {
 }
 
 function validateOptions(options, text, dir) {
+  if (options.retweet || options.reply)
+    parseTweetId(options.retweet || options.reply);
+
   if (options.retweet && !text && options.poll)
     throw new Error("Cannot attach a poll to a retweet");
 
@@ -181,6 +185,29 @@ function withLastLineRemoved(text) {
 
 /***/ }),
 
+/***/ 8045:
+/***/ ((module) => {
+
+module.exports = parseTweetId;
+
+const TWEET_REGEX = /^https:\/\/twitter\.com\/[^/]+\/status\/(\d+)$/;
+
+// TODO allow differently formatted URLs and tweet ids ?
+// https://github.com/twitter-together/action/issues/221
+
+// TODO: Should we check if the referenced tweet actually exists?
+
+function parseTweetId(tweetRef) {
+  const match = tweetRef.match(TWEET_REGEX);
+  if (!match) {
+    throw new Error(`Invalid tweet reference: ${tweetRef}`);
+  }
+  return match[1];
+}
+
+
+/***/ }),
+
 /***/ 2179:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -189,7 +216,7 @@ module.exports = tweet;
 const { TwitterApi } = __nccwpck_require__(9360);
 const mime = __nccwpck_require__(3583);
 
-const TWEET_REGEX = /^https:\/\/twitter\.com\/[^/]+\/status\/(\d+)$/;
+const parseTweetId = __nccwpck_require__(8045);
 
 async function tweet({ twitterCredentials }, tweetData, tweetFile) {
   const client = new TwitterApi(twitterCredentials);
@@ -202,9 +229,8 @@ async function tweet({ twitterCredentials }, tweetData, tweetFile) {
 
 async function handleTweet(client, self, tweet, name) {
   if (tweet.retweet && !tweet.text) {
-    // TODO: Should this throw if an invalid tweet is passed and there is no match?
-    const match = tweet.retweet.match(TWEET_REGEX);
-    if (match) return createRetweet(client, self, match[1]);
+    const tweetId = parseTweetId(tweet.retweet);
+    if (tweetId) return createRetweet(client, self, tweetId);
   }
 
   const tweetData = {
@@ -219,19 +245,17 @@ async function handleTweet(client, self, tweet, name) {
   }
 
   if (tweet.reply) {
-    // TODO: Should this throw if an invalid reply is passed and there is no match?
-    const match = tweet.reply.match(TWEET_REGEX);
-    if (match) {
+    const tweetId = parseTweetId(tweet.reply);
+    if (tweetId) {
       tweetData.reply = {
-        in_reply_to_tweet_id: match[1],
+        in_reply_to_tweet_id: tweetId,
       };
     }
   }
 
   if (tweet.retweet) {
-    // TODO: Should this throw if an invalid tweet is passed and there is no match?
-    const match = tweet.retweet.match(TWEET_REGEX);
-    if (match) tweetData.quote_tweet_id = match[1];
+    const tweetId = parseTweetId(tweet.retweet);
+    if (tweetId) tweetData.quote_tweet_id = tweetId;
   }
 
   if (tweet.media?.length) {
@@ -302,6 +326,7 @@ function createRetweet(client, self, id) {
 module.exports = createCheckRun;
 
 const { autoLink } = __nccwpck_require__(6223);
+const path = __nccwpck_require__(1017);
 
 const parseTweetFileContent = __nccwpck_require__(5935);
 
@@ -355,7 +380,9 @@ async function createCheckRun(
       conclusion: allTweetsValid ? "success" : "failure",
       output: {
         title: `${parsedTweets.length} tweet(s)`,
-        summary: parsedTweets.map(tweetToCheckRunSummary).join("\n\n---\n\n"),
+        summary: parsedTweets
+          .map((tweet) => tweetToCheckRunSummary(tweet, payload, false))
+          .join("\n\n---\n\n"),
       },
     }
   );
@@ -363,10 +390,12 @@ async function createCheckRun(
   toolkit.info(`check run created: ${response.data.html_url}`);
 }
 
-function tweetToCheckRunSummary(tweet) {
-  let text = autoLink(tweet.text)
-    .replace(/(^|\n)/g, "$1> ")
-    .replace(/(^|\n)> (\n|$)/g, "$1>$2");
+function tweetToCheckRunSummary(tweet, payload, threading) {
+  let text = !tweet.text
+    ? ""
+    : autoLink(tweet.text)
+        .replace(/(^|\n)/g, "$1> ")
+        .replace(/(^|\n)> (\n|$)/g, "$1>$2");
 
   if (!tweet.valid)
     return `### ❌ Invalid\n\n${text}\n\n${tweet.error || "Unknown error"}`;
@@ -374,6 +403,25 @@ function tweetToCheckRunSummary(tweet) {
   if (tweet.poll)
     text +=
       "\n\nThe tweet includes a poll:\n\n> 🔘 " + tweet.poll.join("\n> 🔘 ");
+
+  if (tweet.reply) text = `Replying to ${tweet.reply}\n\n${text}`;
+
+  if (tweet.retweet) text = `Retweeting ${tweet.retweet}\n\n${text}`.trim();
+
+  if (tweet.media.length) {
+    console.log(JSON.stringify({ tweet, paylod }, null, 2));
+    const media = tweet.media
+      .map(({ file, alt }) => `- ${path.basename(file)} [${alt}]`)
+      .join("\n");
+    text = `Uploading media:\n\n${media}\n\n${text}`.trim();
+  }
+
+  if (tweet.thread || threading) {
+    let cells = `\n<tr><td>\n\n${text}\n\n</td></tr>`;
+    if (tweet.thread) cells += `${tweetToCheckRunSummary(tweet.thread, true)}`;
+    return threading ? cells : `### ✅ Valid\n\n<table>${cells}\n</table>`;
+  }
+
   return `### ✅ Valid\n\n${text}`;
 }
 
@@ -430,7 +478,10 @@ async function getNewTweets({ octokit, toolkit, payload }) {
   const newTweets = parseDiff(data)
     .filter((file) => file.new && /^tweets\/.*\.tweet$/.test(file.to))
     .map((file) =>
-      file.chunks[0].changes.map((line) => line.content.substr(1)).join("\n")
+      file.chunks[0].changes
+        .filter((line) => line.content.startsWith("+")) // ignore No newline at EOF
+        .map((line) => line.content.substr(1))
+        .join("\n")
     );
 
   toolkit.info(`New tweets found: ${newTweets.length}`);
@@ -9220,12 +9271,21 @@ for (var collections = getKeys(DOMIterables), i = 0; i < collections.length; i++
  * This is the web browser implementation of `debug()`.
  */
 
-exports.log = log;
 exports.formatArgs = formatArgs;
 exports.save = save;
 exports.load = load;
 exports.useColors = useColors;
 exports.storage = localstorage();
+exports.destroy = (() => {
+	let warned = false;
+
+	return () => {
+		if (!warned) {
+			warned = true;
+			console.warn('Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.');
+		}
+	};
+})();
 
 /**
  * Colors.
@@ -9386,18 +9446,14 @@ function formatArgs(args) {
 }
 
 /**
- * Invokes `console.log()` when available.
- * No-op when `console.log` is not a "function".
+ * Invokes `console.debug()` when available.
+ * No-op when `console.debug` is not a "function".
+ * If `console.debug` is not available, falls back
+ * to `console.log`.
  *
  * @api public
  */
-function log(...args) {
-	// This hackery is required for IE8/9, where
-	// the `console.log` function doesn't have 'apply'
-	return typeof console === 'object' &&
-		console.log &&
-		console.log(...args);
-}
+exports.log = console.debug || console.log || (() => {});
 
 /**
  * Save `namespaces`.
@@ -9499,15 +9555,11 @@ function setup(env) {
 	createDebug.enable = enable;
 	createDebug.enabled = enabled;
 	createDebug.humanize = __nccwpck_require__(900);
+	createDebug.destroy = destroy;
 
 	Object.keys(env).forEach(key => {
 		createDebug[key] = env[key];
 	});
-
-	/**
-	* Active `debug` instances.
-	*/
-	createDebug.instances = [];
 
 	/**
 	* The currently active debug mode names, and names to skip.
@@ -9525,7 +9577,7 @@ function setup(env) {
 
 	/**
 	* Selects a color for a debug namespace
-	* @param {String} namespace The namespace string for the for the debug instance to be colored
+	* @param {String} namespace The namespace string for the debug instance to be colored
 	* @return {Number|String} An ANSI color code for the given namespace
 	* @api private
 	*/
@@ -9550,6 +9602,9 @@ function setup(env) {
 	*/
 	function createDebug(namespace) {
 		let prevTime;
+		let enableOverride = null;
+		let namespacesCache;
+		let enabledCache;
 
 		function debug(...args) {
 			// Disabled?
@@ -9579,7 +9634,7 @@ function setup(env) {
 			args[0] = args[0].replace(/%([a-zA-Z%])/g, (match, format) => {
 				// If we encounter an escaped % then don't increase the array index
 				if (match === '%%') {
-					return match;
+					return '%';
 				}
 				index++;
 				const formatter = createDebug.formatters[format];
@@ -9602,31 +9657,36 @@ function setup(env) {
 		}
 
 		debug.namespace = namespace;
-		debug.enabled = createDebug.enabled(namespace);
 		debug.useColors = createDebug.useColors();
-		debug.color = selectColor(namespace);
-		debug.destroy = destroy;
+		debug.color = createDebug.selectColor(namespace);
 		debug.extend = extend;
-		// Debug.formatArgs = formatArgs;
-		// debug.rawLog = rawLog;
+		debug.destroy = createDebug.destroy; // XXX Temporary. Will be removed in the next major release.
 
-		// env-specific initialization logic for debug instances
+		Object.defineProperty(debug, 'enabled', {
+			enumerable: true,
+			configurable: false,
+			get: () => {
+				if (enableOverride !== null) {
+					return enableOverride;
+				}
+				if (namespacesCache !== createDebug.namespaces) {
+					namespacesCache = createDebug.namespaces;
+					enabledCache = createDebug.enabled(namespace);
+				}
+
+				return enabledCache;
+			},
+			set: v => {
+				enableOverride = v;
+			}
+		});
+
+		// Env-specific initialization logic for debug instances
 		if (typeof createDebug.init === 'function') {
 			createDebug.init(debug);
 		}
 
-		createDebug.instances.push(debug);
-
 		return debug;
-	}
-
-	function destroy() {
-		const index = createDebug.instances.indexOf(this);
-		if (index !== -1) {
-			createDebug.instances.splice(index, 1);
-			return true;
-		}
-		return false;
 	}
 
 	function extend(namespace, delimiter) {
@@ -9644,6 +9704,7 @@ function setup(env) {
 	*/
 	function enable(namespaces) {
 		createDebug.save(namespaces);
+		createDebug.namespaces = namespaces;
 
 		createDebug.names = [];
 		createDebug.skips = [];
@@ -9661,15 +9722,10 @@ function setup(env) {
 			namespaces = split[i].replace(/\*/g, '.*?');
 
 			if (namespaces[0] === '-') {
-				createDebug.skips.push(new RegExp('^' + namespaces.substr(1) + '$'));
+				createDebug.skips.push(new RegExp('^' + namespaces.slice(1) + '$'));
 			} else {
 				createDebug.names.push(new RegExp('^' + namespaces + '$'));
 			}
-		}
-
-		for (i = 0; i < createDebug.instances.length; i++) {
-			const instance = createDebug.instances[i];
-			instance.enabled = createDebug.enabled(instance.namespace);
 		}
 	}
 
@@ -9745,6 +9801,14 @@ function setup(env) {
 		return val;
 	}
 
+	/**
+	* XXX DO NOT USE. This is a temporary stub function.
+	* XXX It WILL be removed in the next major release.
+	*/
+	function destroy() {
+		console.warn('Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.');
+	}
+
 	createDebug.enable(createDebug.load());
 
 	return createDebug;
@@ -9792,6 +9856,10 @@ exports.formatArgs = formatArgs;
 exports.save = save;
 exports.load = load;
 exports.useColors = useColors;
+exports.destroy = util.deprecate(
+	() => {},
+	'Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.'
+);
 
 /**
  * Colors.
@@ -10021,7 +10089,9 @@ const {formatters} = module.exports;
 formatters.o = function (v) {
 	this.inspectOpts.colors = this.useColors;
 	return util.inspect(v, this.inspectOpts)
-		.replace(/\s*\n\s*/g, ' ');
+		.split('\n')
+		.map(str => str.trim())
+		.join(' ');
 };
 
 /**
@@ -31982,7 +32052,7 @@ module.exports = JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45,46],"valid"]
 /***/ ((module) => {
 
 "use strict";
-module.exports = {"i8":"2.1.2"};
+module.exports = JSON.parse('{"i8":"2.2.0-dev-prs"}');
 
 /***/ })
 
