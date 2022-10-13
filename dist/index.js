@@ -394,8 +394,8 @@ function tweetToCheckRunSummary(tweet, payload, threading) {
   let text = !tweet.text
     ? ""
     : autoLink(tweet.text)
-      .replace(/(^|\n)/g, "$1> ")
-      .replace(/(^|\n)> (\n|$)/g, "$1>$2");
+        .replace(/(^|\n)/g, "$1> ")
+        .replace(/(^|\n)> (\n|$)/g, "$1>$2");
 
   if (!tweet.valid)
     return `### ❌ Invalid\n\n${text}\n\n${tweet.error || "Unknown error"}`;
@@ -411,8 +411,12 @@ function tweetToCheckRunSummary(tweet, payload, threading) {
   if (tweet.media.length) {
     const media = tweet.media
       .map(({ file, alt }) => {
-        const fileName = path.basename(file);
-        const url = `https://raw.githubusercontent.com/${payload.repository.owner.login}/${payload.repository.name}/${payload.after}/media/${fileName}`;
+        // TODO allow relative media
+        const fileName = file.replace(
+          `/home/runner/work/${payload.repository.name}/${payload.repository.name}/media/`,
+          ""
+        );
+        const url = `https://raw.githubusercontent.com/${payload.owner.login}/${payload.repository.name}/${payload.after}/media/${fileName}`;
         return `${alt}\n<img src="${url}" height="200" />`;
       })
       .join("\n\n");
@@ -421,7 +425,8 @@ function tweetToCheckRunSummary(tweet, payload, threading) {
 
   if (tweet.thread || threading) {
     let cells = `\n<tr><td>\n\n${text}\n\n</td></tr>`;
-    if (tweet.thread) cells += `${tweetToCheckRunSummary(tweet.thread, true)}`;
+    if (tweet.thread)
+      cells += `${tweetToCheckRunSummary(tweet.thread, payload, true)}`;
     return threading ? cells : `### ✅ Valid\n\n<table>${cells}\n</table>`;
   }
 
@@ -32055,7 +32060,7 @@ module.exports = JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45,46],"valid"]
 /***/ ((module) => {
 
 "use strict";
-module.exports = JSON.parse('{"i8":"2.2.0-dev-prs-5"}');
+module.exports = JSON.parse('{"i8":"2.2.0-dev-prs-6"}');
 
 /***/ })
 
