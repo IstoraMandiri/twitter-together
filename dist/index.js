@@ -394,8 +394,8 @@ function tweetToCheckRunSummary(tweet, payload, threading) {
   let text = !tweet.text
     ? ""
     : autoLink(tweet.text)
-        .replace(/(^|\n)/g, "$1> ")
-        .replace(/(^|\n)> (\n|$)/g, "$1>$2");
+      .replace(/(^|\n)/g, "$1> ")
+      .replace(/(^|\n)> (\n|$)/g, "$1>$2");
 
   if (!tweet.valid)
     return `### ❌ Invalid\n\n${text}\n\n${tweet.error || "Unknown error"}`;
@@ -411,7 +411,11 @@ function tweetToCheckRunSummary(tweet, payload, threading) {
   if (tweet.media.length) {
     console.log(JSON.stringify({ tweet, payload }, null, 2));
     const media = tweet.media
-      .map(({ file, alt }) => `- ${path.basename(file)} [${alt}]`)
+      .map(({ file, alt }) => {
+        const fileName = path.basename(file);
+        const url = `https://raw.githubusercontent.com/${payload.repository.owner.login}/${payload.repository.name}/${payload.after}/media/${fileName}`;
+        return `- ![${alt}](${url})`;
+      })
       .join("\n");
     text = `Uploading media:\n\n${media}\n\n${text}`.trim();
   }
@@ -32052,7 +32056,7 @@ module.exports = JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45,46],"valid"]
 /***/ ((module) => {
 
 "use strict";
-module.exports = JSON.parse('{"i8":"2.2.0-dev-prs-2"}');
+module.exports = JSON.parse('{"i8":"2.2.0-dev-prs-3"}');
 
 /***/ })
 
