@@ -413,9 +413,9 @@ function tweetToCheckRunSummary(tweet, payload, threading) {
       .map(({ file, alt }) => {
         const fileName = path.basename(file);
         const url = `https://raw.githubusercontent.com/${payload.repository.owner.login}/${payload.repository.name}/${payload.after}/media/${fileName}`;
-        return `- ${alt}\n<img src="${url}" height="200" />`;
+        return `${alt}\n<img src="${url}" height="200" />`;
       })
-      .join("\n");
+      .join("\n\n");
     text = `Uploading media:\n\n${media}\n\n${text}`.trim();
   }
 
@@ -32055,7 +32055,7 @@ module.exports = JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45,46],"valid"]
 /***/ ((module) => {
 
 "use strict";
-module.exports = JSON.parse('{"i8":"2.2.0-dev-prs-4"}');
+module.exports = JSON.parse('{"i8":"2.2.0-dev-prs-5"}');
 
 /***/ })
 
