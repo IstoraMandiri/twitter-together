@@ -409,7 +409,7 @@ function tweetToCheckRunSummary(tweet, payload, threading) {
   if (tweet.retweet) text = `Retweeting ${tweet.retweet}\n\n${text}`.trim();
 
   if (tweet.media.length) {
-    console.log(JSON.stringify({ tweet, paylod }, null, 2));
+    console.log(JSON.stringify({ tweet, payload }, null, 2));
     const media = tweet.media
       .map(({ file, alt }) => `- ${path.basename(file)} [${alt}]`)
       .join("\n");
@@ -32052,7 +32052,7 @@ module.exports = JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45,46],"valid"]
 /***/ ((module) => {
 
 "use strict";
-module.exports = JSON.parse('{"i8":"2.2.0-dev-prs"}');
+module.exports = JSON.parse('{"i8":"2.2.0-dev-prs-2"}');
 
 /***/ })
 
