@@ -329,6 +329,7 @@ const { autoLink } = __nccwpck_require__(6223);
 const path = __nccwpck_require__(1017);
 
 const parseTweetFileContent = __nccwpck_require__(5935);
+const { join } = __nccwpck_require__(1017);
 
 async function createCheckRun(
   { octokit, payload, startedAt, toolkit, dir },
@@ -381,7 +382,9 @@ async function createCheckRun(
       output: {
         title: `${parsedTweets.length} tweet(s)`,
         summary: parsedTweets
-          .map((tweet) => tweetToCheckRunSummary(tweet, payload, false))
+          .map((tweet) =>
+            tweetToCheckRunSummary({ tweet, payload, dir }, false)
+          )
           .join("\n\n---\n\n"),
       },
     }
@@ -390,7 +393,7 @@ async function createCheckRun(
   toolkit.info(`check run created: ${response.data.html_url}`);
 }
 
-function tweetToCheckRunSummary(tweet, payload, threading) {
+function tweetToCheckRunSummary({ tweet, payload, dir }, threading) {
   let text = !tweet.text
     ? ""
     : autoLink(tweet.text)
@@ -411,12 +414,9 @@ function tweetToCheckRunSummary(tweet, payload, threading) {
   if (tweet.media.length) {
     const media = tweet.media
       .map(({ file, alt }) => {
-        // TODO allow relative media
-        const fileName = file.replace(
-          `/home/runner/work/${payload.repository.name}/${payload.repository.name}/media/`,
-          ""
-        );
-        const url = `https://raw.githubusercontent.com/${payload.owner.login}/${payload.repository.name}/${payload.after}/media/${fileName}`;
+        const fileName = file.replace(dir, "");
+        console.log(fileName);
+        const url = `https://raw.githubusercontent.com/${payload.repository.owner.login}/${payload.repository.name}/${payload.after}${fileName}`;
         return `${alt}\n<img src="${url}" height="200" />`;
       })
       .join("\n\n");
@@ -426,7 +426,10 @@ function tweetToCheckRunSummary(tweet, payload, threading) {
   if (tweet.thread || threading) {
     let cells = `\n<tr><td>\n\n${text}\n\n</td></tr>`;
     if (tweet.thread)
-      cells += `${tweetToCheckRunSummary(tweet.thread, payload, true)}`;
+      cells += tweetToCheckRunSummary(
+        { tweet: tweet.thread, payload, dir },
+        true
+      );
     return threading ? cells : `### ✅ Valid\n\n<table>${cells}\n</table>`;
   }
 
@@ -32060,7 +32063,7 @@ module.exports = JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45,46],"valid"]
 /***/ ((module) => {
 
 "use strict";
-module.exports = JSON.parse('{"i8":"2.2.0-dev-prs-6"}');
+module.exports = JSON.parse('{"i8":"2.2.0-dev-prs-8"}');
 
 /***/ })
 
