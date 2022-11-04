@@ -471,10 +471,10 @@ function summarizeTweet(state, threading = false) {
       .map(({ file, alt }) => {
         const fileName = file.replace(dir, "");
         if (plainText) {
-          return `- ${fileName} [${alt}]`;
+          return `- ${fileName}${alt && ` [${alt}]`}`;
         } else {
           const { repo, sha } = payload.pull_request.head;
-          return `${alt}\n<img src="https://raw.githubusercontent.com/${repo.owner.login}/${repo.name}/${sha}${fileName}" height="200" />`;
+          return `${alt || ""}\n<img src="https://raw.githubusercontent.com/${repo.owner.login}/${repo.name}/${sha}${fileName}" height="200" />`;
         }
       })
       .join(plainText ? "\n" : "\n\n");
@@ -32149,7 +32149,7 @@ module.exports = JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45,46],"valid"]
 /***/ ((module) => {
 
 "use strict";
-module.exports = JSON.parse('{"i8":"etc-dev-3.1.0"}');
+module.exports = JSON.parse('{"i8":"etc-dev-3.1.1"}');
 
 /***/ })
 

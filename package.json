@@ -1,6 +1,6 @@
 {
   "name": "twitter-together",
-  "version": "etc-dev-3.1.0",
+  "version": "etc-dev-3.1.1",
   "description": "A GitHub action to tweet together using pull requests",
   "main": "lib/index.js",
   "scripts": {
