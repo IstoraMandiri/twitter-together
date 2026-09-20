@@ -1304,6 +1304,53 @@ function getDueTweets(state, entries = {}, now = new Date()) {
 
 /***/ }),
 
+/***/ 3301:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+// Thin wrappers around git for the checked out repository. Exposed as
+// properties so tests can replace them.
+const { execFileSync } = __nccwpck_require__(2081);
+
+module.exports = { run, addingCommit, lastChange };
+
+function run(args, cwd) {
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim();
+}
+
+// The commit that first added a file. Stable for the file's whole life, so
+// it is what publication records are attached to. Needs full history
+// (actions/checkout with fetch-depth: 0); returns null otherwise.
+function addingCommit(dir, filename) {
+  try {
+    const lines = module.exports
+      .run(["log", "--diff-filter=A", "--format=%H", "--", filename], dir)
+      .split("\n")
+      .filter(Boolean);
+    return lines.length ? lines[lines.length - 1] : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+// ISO date of the last commit that touched a file, or null.
+function lastChange(dir, filename) {
+  try {
+    return (
+      module.exports.run(["log", "-1", "--format=%cI", "--", filename], dir) ||
+      null
+    );
+  } catch (error) {
+    return null;
+  }
+}
+
+
+/***/ }),
+
 /***/ 164:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -1315,20 +1362,30 @@ const tweet = __nccwpck_require__(2179);
 const formatError = __nccwpck_require__(863);
 const parseTweetFileContent = __nccwpck_require__(5935);
 
+const git = __nccwpck_require__(3301);
 const { scanTweets, selectDue } = __nccwpck_require__(8369);
 const { readLedger, writeLedger, LEDGER_PATH } = __nccwpck_require__(5451);
+const { findRecord, createRecord, completeRecord } = __nccwpck_require__(2782);
+
+// an unknown scheduled tweet this long past its time is not published
+// automatically; it is marked "expired" for a human to look at
+const EXPIRE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Publish tweets whose `schedule` front matter is due.
  *
- * Runs from a `schedule` (cron) or `workflow_dispatch` trigger. Scheduled
- * tweets are deliberately NOT published when their pull request is merged;
- * this is the only place they are sent.
+ * Runs from a `schedule` (cron), `workflow_dispatch` or `repository_dispatch`
+ * trigger. Scheduled tweets are deliberately NOT published when their pull
+ * request is merged; this is the only place they are sent.
  *
- * Every tweet is claimed in the ledger BEFORE it is published. If the run
- * dies midway the tweet stays claimed and is never sent twice; the worst
- * case is a tweet that has to be released by hand, which is preferable to
- * publishing it twice.
+ * Two stores are involved:
+ *   - the ledger file (an index, see ledger.js) says what is queued; it is
+ *     written by the merge and by this run, and read by whoever decides to
+ *     trigger this run. It is not trusted to decide whether to publish.
+ *   - publication records (check runs, see record.js) say what has been
+ *     sent. A tweet is published only if no record exists for it, and a
+ *     record is created before the tweet is sent, so a crash can never
+ *     cause a double publish.
  */
 async function handleSchedule(state) {
   const { toolkit, octokit } = state;
@@ -1341,14 +1398,13 @@ async function handleSchedule(state) {
     process.exit();
   });
 
-  let ledger = await readLedger(state);
+  const ledger = await readLedger(state);
 
   const now = new Date();
   const scheduledTweets = scanTweets(state);
-  const due = selectDue(scheduledTweets, ledger.entries, now);
 
-  // a tweet that was queued on merge but whose file has since been removed
-  // must not stay "pending" forever, or callers would keep asking for it
+  // a tweet queued on merge whose file has since been removed must not stay
+  // "pending" forever, or callers would keep asking for it
   const present = new Set(scheduledTweets.map(({ filename }) => filename));
   const missing = Object.entries(ledger.entries)
     .filter(
@@ -1362,22 +1418,43 @@ async function handleSchedule(state) {
   });
 
   // a scheduled tweet the ledger does not know about (e.g. its merge could
-  // not write the ledger) is queued now, so whoever asks can see it waiting
+  // not write the ledger) is queued now, so whoever asks can see it waiting;
+  // unless it is long overdue, which needs a human to look at it
   const queuedAt = now.toISOString();
   const added = scheduledTweets
     .filter(({ filename }) => !ledger.entries[filename])
     .map(({ filename, schedule }) => {
+      const expired = now - schedule > EXPIRE_MS;
       ledger.entries[filename] = {
-        status: "pending",
+        status: expired ? "expired" : "pending",
         scheduled: schedule.toISOString(),
         queuedAt,
       };
       return filename;
     });
 
+  // a failed tweet whose file has been changed since is queued again; the
+  // publication record decides whether it may actually be retried
+  const requeued = scheduledTweets
+    .filter(({ filename }) => {
+      const entry = ledger.entries[filename];
+      if (!entry || entry.status !== "failed" || !entry.failedAt) return false;
+      const changed = git.lastChange(state.dir, filename);
+      return !!changed && new Date(changed) > new Date(entry.failedAt);
+    })
+    .map(({ filename }) => {
+      ledger.entries[filename].status = "pending";
+      ledger.entries[filename].requeuedAt = queuedAt;
+      return filename;
+    });
+
+  const due = selectDue(scheduledTweets, ledger.entries, now);
+
   if (due.length === 0) {
     const changes = [];
     if (added.length) changes.push(`Queue ${added.length} scheduled tweet(s)`);
+    if (requeued.length)
+      changes.push(`Requeue ${requeued.length} changed tweet(s)`);
     if (missing.length)
       changes.push(
         `Mark ${missing.length} removed scheduled tweet(s) as missing`
@@ -1388,31 +1465,82 @@ async function handleSchedule(state) {
     }
     return toolkit.info("No scheduled tweets are due");
   }
+
   toolkit.info(
     `${due.length} scheduled tweet(s) due: ${due
       .map(({ filename }) => filename)
       .join(", ")}`
   );
 
-  // claim them all up front, so a crash cannot cause a double publish
-  const claimedAt = now.toISOString();
-  due.forEach(({ filename, schedule }) => {
-    ledger.entries[filename] = {
-      ...ledger.entries[filename],
-      status: "publishing",
-      scheduled: schedule.toISOString(),
-      claimedAt,
-    };
-  });
-  ledger = await writeLedger(
-    state,
-    ledger,
-    `Claim ${due.length} scheduled tweet(s)`
-  );
-
   const errors = [];
   for (const item of due) {
     const entry = ledger.entries[item.filename];
+    const fail = (message) => {
+      entry.status = "failed";
+      entry.failedAt = new Date().toISOString();
+      entry.error = message;
+      errors.push(`${item.filename}: ${message}`);
+    };
+
+    // records live on the commit that added the file
+    const sha = git.addingCommit(state.dir, item.filename);
+    if (!sha) {
+      fail(
+        "Could not find the commit that added this tweet. Is the checkout shallow? Use fetch-depth: 0."
+      );
+      continue;
+    }
+
+    // never publish a tweet that has a record, unless it failed and the file
+    // has been changed since (someone fixed it)
+    let existing;
+    try {
+      existing = await findRecord(state, sha, item.filename);
+    } catch (error) {
+      fail(formatError(error));
+      continue;
+    }
+    if (existing) {
+      const changed = git.lastChange(state.dir, item.filename);
+      const retry =
+        existing.status === "completed" &&
+        existing.conclusion === "failure" &&
+        !!changed &&
+        !!existing.completed_at &&
+        new Date(changed) > new Date(existing.completed_at);
+      if (!retry) {
+        entry.status =
+          existing.status !== "completed"
+            ? "publishing"
+            : existing.conclusion === "success"
+            ? "published"
+            : "failed";
+        entry.record = existing.html_url;
+        toolkit.info(
+          `Skipping ${item.filename}: already ${entry.status} (${existing.html_url})`
+        );
+        continue;
+      }
+      toolkit.info(`Retrying ${item.filename}: file changed since it failed`);
+    }
+
+    // claim, then publish
+    let record;
+    try {
+      record = await createRecord(
+        state,
+        sha,
+        item.filename,
+        `Scheduled for ${item.schedule.toISOString()}`
+      );
+    } catch (error) {
+      fail(formatError(error));
+      continue;
+    }
+    entry.status = "publishing";
+    entry.claimedAt = new Date().toISOString();
+    entry.record = record.html_url;
+
     try {
       const parsed = parseTweetFileContent(item.text, state.dir);
       toolkit.info(`Tweeting (scheduled): ${parsed.text}`);
@@ -1428,17 +1556,22 @@ async function handleSchedule(state) {
       entry.status = "published";
       entry.publishedAt = new Date().toISOString();
       entry.urls = urls;
+      await completeRecord(
+        state,
+        record.id,
+        "success",
+        "Published",
+        urls.join("\n")
+      );
     } catch (error) {
       const failure = Array.isArray(error) ? error[0] : error;
       toolkit.error(inspect(failure));
-      entry.status = "failed";
-      entry.failedAt = new Date().toISOString();
-      entry.error = formatError(failure);
-      errors.push(`${item.filename}: ${entry.error}`);
+      fail(formatError(failure));
+      await completeRecord(state, record.id, "failure", "Failed", entry.error);
     }
   }
 
-  // record the outcome; retry on conflict so results are never lost
+  // record the outcome in the index; retry on conflict so it is never lost
   await updateWithRetry(
     state,
     ledger,
@@ -1448,7 +1581,7 @@ async function handleSchedule(state) {
   if (errors.length) {
     return toolkit.setFailed(
       `Error publishing scheduled tweets:\n- ${errors.join("\n- ")}\n\n` +
-        `Fix the tweet and remove its entry from ${LEDGER_PATH} to try again.`
+        `To retry a failed tweet, push a fix to its file. See ${LEDGER_PATH} for details.`
     );
   }
 }
@@ -1596,6 +1729,78 @@ function sortKeys(entries) {
       acc[key] = entries[key];
       return acc;
     }, {});
+}
+
+
+/***/ }),
+
+/***/ 2782:
+/***/ ((module) => {
+
+// Publication records are check runs on the commit that added the tweet.
+//
+// Check runs can only be created or changed by a GitHub App (the workflow
+// token acts as the GitHub Actions app) and can never be deleted, so a
+// person with write access can neither forge a "published" record to
+// suppress a tweet nor remove one to have it published again. This is the
+// source of truth for "has this tweet been sent"; the ledger file is only
+// an index.
+module.exports = { recordName, findRecord, createRecord, completeRecord };
+
+function recordName(filename) {
+  return `scheduled tweet: ${filename}`;
+}
+
+function repo({ payload }) {
+  return {
+    owner: payload.repository.owner.login,
+    repo: payload.repository.name,
+  };
+}
+
+// newest record for this file on its commit, or null
+async function findRecord(state, sha, filename) {
+  const name = recordName(filename);
+  const { data } = await state.octokit.request(
+    "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
+    { ...repo(state), ref: sha, check_name: name, per_page: 100 }
+  );
+  return (
+    data.check_runs
+      .filter((run) => run.name === name)
+      .sort((a, b) => b.id - a.id)[0] || null
+  );
+}
+
+// claim: an in-progress check run. Publishing only proceeds once this exists.
+async function createRecord(state, sha, filename, summary) {
+  const { data } = await state.octokit.request(
+    "POST /repos/{owner}/{repo}/check-runs",
+    {
+      ...repo(state),
+      name: recordName(filename),
+      head_sha: sha,
+      status: "in_progress",
+      started_at: new Date().toISOString(),
+      output: { title: "Publishing", summary },
+    }
+  );
+  return data;
+}
+
+async function completeRecord(state, id, conclusion, title, summary) {
+  const { data } = await state.octokit.request(
+    "PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}",
+    {
+      ...repo(state),
+      check_run_id: id,
+      status: "completed",
+      conclusion,
+      completed_at: new Date().toISOString(),
+      output: { title, summary },
+    }
+  );
+  return data;
 }
 
 
@@ -32667,6 +32872,14 @@ module.exports = eval("require")("encoding");
 
 "use strict";
 module.exports = require("assert");
+
+/***/ }),
+
+/***/ 2081:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("child_process");
 
 /***/ }),
 

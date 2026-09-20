@@ -1,5 +1,6 @@
 /**
- * A due scheduled tweet is claimed, published, and recorded.
+ * A due scheduled tweet is claimed (check run), published, and recorded
+ * (check run completed, index written; the ledger branch is created first).
  */
 
 const path = require("path");
@@ -29,6 +30,17 @@ const LEDGER =
   "/repos/twitter-together/action/contents/.github%2Fpublished-tweets.json";
 const decode = (content) =>
   JSON.parse(Buffer.from(content, "base64").toString("utf8"));
+
+// the ledger does not know this tweet, so it must be recently due or it
+// would be expired rather than published: generate it with a time an hour ago
+// (generated files are gitignored)
+const fs = require("fs");
+const SCHEDULED = new Date(Date.now() - 60 * 60 * 1000);
+SCHEDULED.setUTCMilliseconds(0);
+fs.writeFileSync(
+  path.join(__dirname, "tweets", "scheduled.tweet"),
+  `---\nschedule: ${SCHEDULED.toISOString()}\n---\n\nScheduled hello!\n`
+);
 
 // MOCK
 nock("https://api.github.com", {
@@ -70,29 +82,16 @@ nock("https://api.github.com", {
   })
   .reply(201)
 
-  // claim
-  .put(LEDGER, (body) => {
-    const entries = decode(body.content);
-    tap.same(Object.keys(entries), ["tweets/scheduled.tweet"]);
-    tap.equal(entries["tweets/scheduled.tweet"].status, "publishing");
-    tap.equal(
-      entries["tweets/scheduled.tweet"].scheduled,
-      "2020-01-02T03:04:00.000Z"
-    );
-    tap.equal(body.branch, "published-tweets");
-    tap.match(body.message, /Claim 1 scheduled tweet/);
-    tap.match(body.message, /\[skip ci\]/);
-    tap.equal(body.sha, "blobsha", "updates the file created with the branch");
-    return true;
-  })
-  .reply(201, { content: { sha: "ledgersha1" } })
-
   // record the result
   .put(LEDGER, (body) => {
     const entry = decode(body.content)["tweets/scheduled.tweet"];
     tap.equal(entry.status, "published");
     tap.same(entry.urls, ["https://x.com/gr2m/status/0000000000000000002"]);
-    tap.equal(body.sha, "ledgersha1");
+    tap.equal(
+      entry.record,
+      "https://github.com/twitter-together/action/runs/77"
+    );
+    tap.equal(body.sha, "blobsha", "updates the file created with the branch");
     tap.match(body.message, /Publish 1 scheduled tweet/);
     return true;
   })
@@ -113,5 +112,38 @@ process.on("exit", (code) => {
   tap.equal(code, 0);
   tap.same(nock.pendingMocks(), []);
 });
+
+// publication records attach to the commit that added the file; the test
+// folders are not their own git repositories, so stub git out
+const git = require("../../lib/schedule/git");
+git.addingCommit = () => "add0000000000000000000000000000000000000";
+git.lastChange = () => "2020-01-03T00:00:00Z";
+
+// publication records (check runs)
+nock("https://api.github.com", {
+  reqheaders: { authorization: "token secret123" },
+})
+  .get(
+    "/repos/twitter-together/action/commits/add0000000000000000000000000000000000000/check-runs"
+  )
+  .query(true)
+  .reply(200, { total_count: 0, check_runs: [] })
+  .post("/repos/twitter-together/action/check-runs", (body) => {
+    tap.equal(body.name, "scheduled tweet: tweets/scheduled.tweet");
+    tap.equal(body.head_sha, "add0000000000000000000000000000000000000");
+    tap.equal(body.status, "in_progress");
+    return true;
+  })
+  .reply(201, {
+    id: 77,
+    html_url: "https://github.com/twitter-together/action/runs/77",
+  })
+  .patch("/repos/twitter-together/action/check-runs/77", (body) => {
+    tap.equal(body.status, "completed");
+    tap.equal(body.conclusion, "success");
+    tap.match(body.output.summary, /x\.com\/gr2m\/status/);
+    return true;
+  })
+  .reply(200, { id: 77 });
 
 require("../../lib");

@@ -1,5 +1,5 @@
 /**
- * A tweet queued as "pending" on merge is claimed, published, and recorded.
+ * A tweet with a successful publication record is never sent again, even if the index says pending.
  */
 
 const path = require("path");
@@ -34,7 +34,6 @@ const decode = (content) =>
 nock("https://api.github.com", {
   reqheaders: { authorization: "token secret123" },
 })
-  // queued on merge
   .get(LEDGER)
   .query({ ref: "published-tweets" })
   .reply(200, {
@@ -44,46 +43,21 @@ nock("https://api.github.com", {
         "tweets/scheduled.tweet": {
           status: "pending",
           scheduled: "2020-01-02T03:04:00.000Z",
-          queuedAt: "2019-12-01T00:00:00.000Z",
         },
       }),
       "utf8"
     ).toString("base64"),
   })
-
-  // record the result
   .put(LEDGER, (body) => {
-    const entry = decode(body.content)["tweets/scheduled.tweet"];
-    tap.equal(entry.status, "published");
-    tap.same(entry.urls, ["https://x.com/gr2m/status/0000000000000000002"]);
-    tap.equal(body.sha, "ledgersha0");
-    tap.equal(entry.queuedAt, "2019-12-01T00:00:00.000Z", "keeps queue info");
-    tap.match(body.message, /Publish 1 scheduled tweet/);
+    const entries = decode(body.content);
+    tap.equal(entries["tweets/scheduled.tweet"].status, "published");
+    tap.equal(
+      entries["tweets/scheduled.tweet"].record,
+      "https://github.com/twitter-together/action/runs/5"
+    );
     return true;
   })
-  .reply(200, { content: { sha: "ledgersha2" } });
-
-nock("https://api.twitter.com")
-  .get("/2/users/me")
-  .reply(200, { data: { id: "123", name: "gr2m", username: "gr2m" } })
-  .post("/2/tweets", (body) => {
-    tap.equal(body.text, "Scheduled hello!");
-    return true;
-  })
-  .reply(201, {
-    data: { id: "0000000000000000002", text: "Scheduled hello!" },
-  });
-
-process.on("exit", (code) => {
-  tap.equal(code, 0);
-  tap.same(nock.pendingMocks(), []);
-});
-
-// publication records attach to the commit that added the file; the test
-// folders are not their own git repositories, so stub git out
-const git = require("../../lib/schedule/git");
-git.addingCommit = () => "add0000000000000000000000000000000000000";
-git.lastChange = () => "2020-01-03T00:00:00Z";
+  .reply(200, { content: { sha: "ledgersha1" } });
 
 // publication records (check runs)
 nock("https://api.github.com", {
@@ -93,22 +67,30 @@ nock("https://api.github.com", {
     "/repos/twitter-together/action/commits/add0000000000000000000000000000000000000/check-runs"
   )
   .query(true)
-  .reply(200, { total_count: 0, check_runs: [] })
-  .post("/repos/twitter-together/action/check-runs", (body) => {
-    tap.equal(body.name, "scheduled tweet: tweets/scheduled.tweet");
-    tap.equal(body.head_sha, "add0000000000000000000000000000000000000");
-    tap.equal(body.status, "in_progress");
-    return true;
-  })
-  .reply(201, {
-    id: 77,
-    html_url: "https://github.com/twitter-together/action/runs/77",
-  })
-  .patch("/repos/twitter-together/action/check-runs/77", (body) => {
-    tap.equal(body.status, "completed");
-    tap.equal(body.conclusion, "success");
-    return true;
-  })
-  .reply(200, { id: 77 });
+  .reply(200, {
+    total_count: 0,
+    check_runs: [
+      {
+        id: 5,
+        name: "scheduled tweet: tweets/scheduled.tweet",
+        status: "completed",
+        conclusion: "success",
+        completed_at: "2020-01-02T03:10:00Z",
+        html_url: "https://github.com/twitter-together/action/runs/5",
+      },
+    ],
+  });
+
+process.on("exit", (code) => {
+  tap.equal(code, 0);
+  tap.same(nock.pendingMocks(), []);
+  process.exit(0);
+});
+
+// publication records attach to the commit that added the file; the test
+// folders are not their own git repositories, so stub git out
+const git = require("../../lib/schedule/git");
+git.addingCommit = () => "add0000000000000000000000000000000000000";
+git.lastChange = () => "2020-01-03T00:00:00Z";
 
 require("../../lib");

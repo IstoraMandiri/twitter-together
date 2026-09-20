@@ -254,7 +254,8 @@ on:
     - cron: "0 * * * *"
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: write # the queue branch
+  checks: write # publication records
 concurrency:
   group: publish-scheduled-tweets
   cancel-in-progress: false
@@ -263,6 +264,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # records attach to the commit that added each tweet
       - uses: twitter-together/action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -276,15 +279,24 @@ This needs no credentials beyond the ones the repository already has. Timing is 
 interval, and GitHub often delays scheduled runs, so treat the scheduled time as "not before" rather
 than exact. `workflow_dispatch` lets a maintainer publish due tweets without waiting for the next run.
 
-Which tweets have been published is recorded in `.github/published-tweets.json` on a `published-tweets`
-branch, committed by the workflow. It lives on its own branch because a protected default branch (pull
-requests only) would block the workflow from writing to it; the branch is created automatically on first
-use. Each tweet is claimed in that file _before_ it is sent, so a run that dies midway can never
-publish the same tweet twice. The cost of that guarantee is that an interrupted run may leave a tweet
-stuck as `"publishing"`; remove its entry from the file to release it. A tweet X rejects is recorded
-as `"failed"` with the reason, and is not retried until its entry is removed.
+Two things keep track of scheduled tweets:
 
-The ledger path and branch can be changed with the `SCHEDULE_LEDGER_PATH` and `SCHEDULE_LEDGER_BRANCH` environment variables.
+- **Publication records** are check runs on the commit that added the tweet file, named
+  `scheduled tweet: <file>`. A record is created before the tweet is sent and completed with the
+  result. Check runs can only be created or changed by a GitHub App (the workflow token counts as
+  one) and can never be deleted, so nobody with write access can forge a "published" record to
+  suppress a tweet, or remove one to have it sent again. This is what decides whether a tweet may be
+  published. It needs `checks: write` and a full-history checkout (`fetch-depth: 0`) so the action
+  can find each file's adding commit.
+- **The queue** is `.github/published-tweets.json` on a `published-tweets` branch, created
+  automatically. It is an index of what is waiting, for whoever triggers this workflow to read; it
+  is not trusted to decide anything. A tweet the queue does not know about is queued when the
+  workflow next runs, unless its time passed more than 7 days ago, in which case it is marked
+  `expired` and left for a human.
+
+To retry a tweet X rejected, push a change to its file: it is retried once the file is newer than the
+failed record. The queue path and branch can be changed with `SCHEDULE_LEDGER_PATH` and
+`SCHEDULE_LEDGER_BRANCH`.
 
 To include media items with your tweet, include the `media` frontmatter item as an array with each item having a `file` property and an optional `alt` property.
 The `file` property should be the name of a file within the `media` directory of your repository (same level as the `tweets` directory).
