@@ -70,6 +70,15 @@ nock("https://api.github.com", {
   .reply(200, {
     total_count: 0,
     check_runs: [
+      // older, failed attempt: the newest record wins
+      {
+        id: 4,
+        name: "scheduled tweet: tweets/scheduled.tweet",
+        status: "completed",
+        conclusion: "failure",
+        completed_at: "2020-01-02T03:05:00Z",
+        html_url: "https://github.com/twitter-together/action/runs/4",
+      },
       {
         id: 5,
         name: "scheduled tweet: tweets/scheduled.tweet",
@@ -78,6 +87,8 @@ nock("https://api.github.com", {
         completed_at: "2020-01-02T03:10:00Z",
         html_url: "https://github.com/twitter-together/action/runs/5",
       },
+      // unrelated check on the same commit
+      { id: 6, name: "some other check", status: "completed" },
     ],
   });
 
