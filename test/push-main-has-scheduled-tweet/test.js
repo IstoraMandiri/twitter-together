@@ -45,6 +45,29 @@ nock("https://api.github.com", {
     ],
   })
 
+  // queue in the ledger
+  .get(
+    "/repos/twitter-together/action/contents/.github%2Fpublished-tweets.json"
+  )
+  .query({ ref: "main" })
+  .reply(404)
+  .put(
+    "/repos/twitter-together/action/contents/.github%2Fpublished-tweets.json",
+    (body) => {
+      const entries = JSON.parse(
+        Buffer.from(body.content, "base64").toString("utf8")
+      );
+      tap.equal(entries["tweets/scheduled.tweet"].status, "pending");
+      tap.equal(
+        entries["tweets/scheduled.tweet"].scheduled,
+        "2030-01-02T03:04:00.000Z"
+      );
+      tap.match(body.message, /Queue 1 scheduled tweet/);
+      return true;
+    }
+  )
+  .reply(201, { content: { sha: "ledgersha1" } })
+
   // post comment
   .post(
     "/repos/twitter-together/action/commits/0000000000000000000000000000000000000002/comments",

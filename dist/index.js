@@ -974,6 +974,8 @@ const tweet = __nccwpck_require__(2179);
 const formatError = __nccwpck_require__(863);
 
 const parseTweetFileContent = __nccwpck_require__(5935);
+const { readLedger, writeLedger } = __nccwpck_require__(5451);
+const { isClaimed } = __nccwpck_require__(8369);
 
 async function handlePush(state) {
   const { toolkit, octokit, payload, ref } = state;
@@ -1031,9 +1033,10 @@ async function handlePush(state) {
             newTweets[i].filename
           }`
         );
-        scheduled.push(
-          `${newTweets[i].filename} (${parsed.schedule.toISOString()})`
-        );
+        scheduled.push({
+          filename: newTweets[i].filename,
+          scheduled: parsed.schedule.toISOString(),
+        });
         continue;
       }
 
@@ -1065,10 +1068,26 @@ async function handlePush(state) {
   }
 
   if (scheduled.length) {
+    // queue them, so whoever triggers the scheduled publish can see what is
+    // waiting without scanning every tweet file
+    const ledger = await readLedger(state);
+    const queuedAt = new Date().toISOString();
+    scheduled.forEach(({ filename, scheduled: at }) => {
+      if (isClaimed(ledger.entries[filename])) return;
+      ledger.entries[filename] = { status: "pending", scheduled: at, queuedAt };
+    });
+    await writeLedger(
+      state,
+      ledger,
+      `Queue ${scheduled.length} scheduled tweet(s)`
+    );
+
     await addComment(
       state,
       "Scheduled, will be published automatically when due:\n\n- " +
-        scheduled.join("\n- ")
+        scheduled
+          .map(({ filename, scheduled: at }) => `${filename} (${at})`)
+          .join("\n- ")
     );
   }
 
@@ -1195,6 +1214,9 @@ Enjoy!`,
 
 module.exports = getDueTweets;
 module.exports.getSchedule = getSchedule;
+module.exports.scanTweets = scanTweets;
+module.exports.selectDue = selectDue;
+module.exports.isClaimed = isClaimed;
 
 const { readdirSync, readFileSync } = __nccwpck_require__(7147);
 const { join, relative } = __nccwpck_require__(1017);
@@ -1240,11 +1262,11 @@ function walk(dir) {
 }
 
 /**
- * Find scheduled tweets that are due and have not been claimed yet.
+ * All tweet files that carry a `schedule`, whatever their date.
  *
  * @returns {{ filename: string, text: string, schedule: Date }[]}
  */
-function getDueTweets({ dir }, entries = {}, now = new Date()) {
+function scanTweets({ dir }) {
   return walk(join(dir, "tweets"))
     .map((path) => {
       const text = readFileSync(path, "utf8");
@@ -1255,11 +1277,28 @@ function getDueTweets({ dir }, entries = {}, now = new Date()) {
         schedule: getSchedule(text),
       };
     })
+    .filter((tweet) => tweet.schedule);
+}
+
+// "pending" is written when the tweet is merged and only means "queued";
+// anything else means a publish run has already taken ownership of it
+function isClaimed(entry) {
+  return !!entry && entry.status !== "pending";
+}
+
+function selectDue(tweets, entries = {}, now = new Date()) {
+  return tweets
     .filter(
-      (tweet) =>
-        tweet.schedule && tweet.schedule <= now && !entries[tweet.filename]
+      (tweet) => tweet.schedule <= now && !isClaimed(entries[tweet.filename])
     )
     .sort((a, b) => a.schedule - b.schedule);
+}
+
+/**
+ * Find scheduled tweets that are due and have not been claimed yet.
+ */
+function getDueTweets(state, entries = {}, now = new Date()) {
+  return selectDue(scanTweets(state), entries, now);
 }
 
 
@@ -1276,7 +1315,7 @@ const tweet = __nccwpck_require__(2179);
 const formatError = __nccwpck_require__(863);
 const parseTweetFileContent = __nccwpck_require__(5935);
 
-const getDueTweets = __nccwpck_require__(8369);
+const { scanTweets, selectDue } = __nccwpck_require__(8369);
 const { readLedger, writeLedger, LEDGER_PATH } = __nccwpck_require__(5451);
 
 /**
@@ -1304,8 +1343,33 @@ async function handleSchedule(state) {
 
   let ledger = await readLedger(state);
 
-  const due = getDueTweets(state, ledger.entries);
+  const now = new Date();
+  const scheduledTweets = scanTweets(state);
+  const due = selectDue(scheduledTweets, ledger.entries, now);
+
+  // a tweet that was queued on merge but whose file has since been removed
+  // must not stay "pending" forever, or callers would keep asking for it
+  const present = new Set(scheduledTweets.map(({ filename }) => filename));
+  const missing = Object.entries(ledger.entries)
+    .filter(
+      ([filename, entry]) =>
+        entry.status === "pending" && !present.has(filename)
+    )
+    .map(([filename]) => filename);
+  missing.forEach((filename) => {
+    ledger.entries[filename].status = "missing";
+    ledger.entries[filename].missingAt = now.toISOString();
+  });
+
   if (due.length === 0) {
+    if (missing.length) {
+      toolkit.info(`Marked ${missing.length} removed tweet(s) as missing`);
+      await writeLedger(
+        state,
+        ledger,
+        `Mark ${missing.length} removed scheduled tweet(s) as missing`
+      );
+    }
     return toolkit.info("No scheduled tweets are due");
   }
   toolkit.info(
@@ -1315,9 +1379,10 @@ async function handleSchedule(state) {
   );
 
   // claim them all up front, so a crash cannot cause a double publish
-  const claimedAt = new Date().toISOString();
+  const claimedAt = now.toISOString();
   due.forEach(({ filename, schedule }) => {
     ledger.entries[filename] = {
+      ...ledger.entries[filename],
       status: "publishing",
       scheduled: schedule.toISOString(),
       claimedAt,
@@ -32817,7 +32882,11 @@ async function main() {
   if (trigger === "pull_request" || trigger === "pull_request_target") {
     await handlePullRequest(githubState);
   }
-  if (trigger === "schedule" || trigger === "workflow_dispatch") {
+  if (
+    trigger === "schedule" ||
+    trigger === "workflow_dispatch" ||
+    trigger === "repository_dispatch"
+  ) {
     await handleSchedule(githubState);
   }
 }

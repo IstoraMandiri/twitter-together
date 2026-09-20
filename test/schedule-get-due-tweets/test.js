@@ -32,12 +32,13 @@ tap.test("finds due tweets, earliest first, recursively", (t) => {
   t.end();
 });
 
-tap.test("skips tweets already in the ledger", (t) => {
+tap.test("skips tweets already claimed, but not pending ones", (t) => {
   const due = getDueTweets(
     { dir },
     {
       "tweets/a-earlier.tweet": { status: "published" },
       "tweets/nested/c-nested.tweet": { status: "failed" },
+      "tweets/b-later.tweet": { status: "pending" },
     },
     now
   );
@@ -45,6 +46,11 @@ tap.test("skips tweets already in the ledger", (t) => {
     due.map(({ filename }) => filename),
     ["tweets/b-later.tweet"]
   );
+  t.notOk(getDueTweets.isClaimed(undefined));
+  t.notOk(getDueTweets.isClaimed({ status: "pending" }));
+  t.ok(getDueTweets.isClaimed({ status: "publishing" }));
+  t.ok(getDueTweets.isClaimed({ status: "missing" }));
+  t.equal(getDueTweets.scanTweets({ dir }).length, 4, "all scheduled files");
   t.end();
 });
 
