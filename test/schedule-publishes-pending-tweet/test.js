@@ -36,7 +36,7 @@ nock("https://api.github.com", {
 })
   // queued on merge
   .get(LEDGER)
-  .query({ ref: "main" })
+  .query({ ref: "published-tweets" })
   .reply(200, {
     sha: "ledgersha0",
     content: Buffer.from(
@@ -66,7 +66,7 @@ nock("https://api.github.com", {
       entries["tweets/scheduled.tweet"].scheduled,
       "2020-01-02T03:04:00.000Z"
     );
-    tap.equal(body.branch, "main");
+    tap.equal(body.branch, "published-tweets");
     tap.match(body.message, /Claim 1 scheduled tweet/);
     tap.match(body.message, /\[skip ci\]/);
     return true;

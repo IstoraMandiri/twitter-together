@@ -72,7 +72,7 @@ nock("https://api.github.com")
       title: "1 tweet(s)",
       summary: `### ✅ Valid Tweet
 
-🗓 Scheduled for 2030-01-02T03:04:00.000Z
+📅 Scheduled for 2030-01-02T03:04:00.000Z
 
 > Future news!`,
     });

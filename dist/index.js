@@ -754,7 +754,7 @@ function summarizeTweet(state, threading = false) {
   }
 
   if (!threading && tweet.schedule)
-    text = `🗓 Scheduled for ${tweet.schedule.toISOString()}\n\n${text}`.trim();
+    text = `📅 Scheduled for ${tweet.schedule.toISOString()}\n\n${text}`.trim();
 
   if (!threading && tweet.warnings && tweet.warnings.length)
     text = `${text}\n\n${tweet.warnings
@@ -1361,14 +1361,30 @@ async function handleSchedule(state) {
     ledger.entries[filename].missingAt = now.toISOString();
   });
 
+  // a scheduled tweet the ledger does not know about (e.g. its merge could
+  // not write the ledger) is queued now, so whoever asks can see it waiting
+  const queuedAt = now.toISOString();
+  const added = scheduledTweets
+    .filter(({ filename }) => !ledger.entries[filename])
+    .map(({ filename, schedule }) => {
+      ledger.entries[filename] = {
+        status: "pending",
+        scheduled: schedule.toISOString(),
+        queuedAt,
+      };
+      return filename;
+    });
+
   if (due.length === 0) {
-    if (missing.length) {
-      toolkit.info(`Marked ${missing.length} removed tweet(s) as missing`);
-      await writeLedger(
-        state,
-        ledger,
+    const changes = [];
+    if (added.length) changes.push(`Queue ${added.length} scheduled tweet(s)`);
+    if (missing.length)
+      changes.push(
         `Mark ${missing.length} removed scheduled tweet(s) as missing`
       );
+    if (changes.length) {
+      toolkit.info(changes.join("; "));
+      await writeLedger(state, ledger, changes.join("; "));
     }
     return toolkit.info("No scheduled tweets are due");
   }
@@ -1459,24 +1475,35 @@ async function updateWithRetry(state, ledger, message, attempts = 3) {
 /***/ 5451:
 /***/ ((module) => {
 
-// Records which scheduled tweets have already been claimed / published, so a
-// tweet is never published twice. Stored in the repository so that it
+// Records which scheduled tweets have been queued / claimed / published, so
+// a tweet is never published twice. Stored in the repository so that it
 // survives between workflow runs, and updated through the contents API so
 // that concurrent updates are rejected rather than silently merged.
+//
+// It lives on its own branch: the default branch is usually protected
+// (pull requests only), which would block the workflow from writing to it.
+// The branch is created, as an orphan holding only the ledger, on first use.
 const LEDGER_PATH =
   process.env.SCHEDULE_LEDGER_PATH || ".github/published-tweets.json";
+const LEDGER_BRANCH = process.env.SCHEDULE_LEDGER_BRANCH || "published-tweets";
 
-module.exports = { readLedger, writeLedger, LEDGER_PATH };
+module.exports = { readLedger, writeLedger, LEDGER_PATH, LEDGER_BRANCH };
 
-async function readLedger({ octokit, payload }) {
+function repo({ payload }) {
+  return {
+    owner: payload.repository.owner.login,
+    repo: payload.repository.name,
+  };
+}
+
+async function readLedger(state) {
   try {
-    const { data } = await octokit.request(
+    const { data } = await state.octokit.request(
       "GET /repos/{owner}/{repo}/contents/{path}",
       {
-        owner: payload.repository.owner.login,
-        repo: payload.repository.name,
+        ...repo(state),
         path: LEDGER_PATH,
-        ref: payload.repository.default_branch,
+        ref: LEDGER_BRANCH,
         headers: { "cache-control": "no-cache" },
         request: { expectStatus: 404 },
       }
@@ -1486,19 +1513,24 @@ async function readLedger({ octokit, payload }) {
       entries: JSON.parse(Buffer.from(data.content, "base64").toString("utf8")),
     };
   } catch (error) {
+    // no branch, or no file on it yet
     if (error.status === 404) return { sha: undefined, entries: {} };
     throw error;
   }
 }
 
-async function writeLedger({ octokit, payload }, { sha, entries }, message) {
-  const { data } = await octokit.request(
+async function writeLedger(state, { sha, entries }, message) {
+  if (!sha) {
+    // nothing was read: make sure the branch exists before writing to it
+    const created = await ensureBranch(state);
+    if (created) sha = created;
+  }
+  const { data } = await state.octokit.request(
     "PUT /repos/{owner}/{repo}/contents/{path}",
     {
-      owner: payload.repository.owner.login,
-      repo: payload.repository.name,
+      ...repo(state),
       path: LEDGER_PATH,
-      branch: payload.repository.default_branch,
+      branch: LEDGER_BRANCH,
       message: `${message}\n\n[skip ci]`,
       sha,
       content: Buffer.from(
@@ -1508,6 +1540,53 @@ async function writeLedger({ octokit, payload }, { sha, entries }, message) {
     }
   );
   return { sha: data.content.sha, entries };
+}
+
+// Create the ledger branch as an orphan commit containing an empty ledger.
+// Returns the blob sha of the created file, or undefined if the branch
+// already existed.
+async function ensureBranch(state) {
+  const { octokit } = state;
+  try {
+    await octokit.request("GET /repos/{owner}/{repo}/git/ref/{ref}", {
+      ...repo(state),
+      ref: `heads/${LEDGER_BRANCH}`,
+      request: { expectStatus: 404 },
+    });
+    return undefined;
+  } catch (error) {
+    if (error.status !== 404) throw error;
+  }
+
+  state.toolkit.info(`Creating ledger branch "${LEDGER_BRANCH}"`);
+  const { data: blob } = await octokit.request(
+    "POST /repos/{owner}/{repo}/git/blobs",
+    { ...repo(state), content: "{}\n", encoding: "utf-8" }
+  );
+  const { data: tree } = await octokit.request(
+    "POST /repos/{owner}/{repo}/git/trees",
+    {
+      ...repo(state),
+      tree: [
+        { path: LEDGER_PATH, mode: "100644", type: "blob", sha: blob.sha },
+      ],
+    }
+  );
+  const { data: commit } = await octokit.request(
+    "POST /repos/{owner}/{repo}/git/commits",
+    {
+      ...repo(state),
+      message: "Create scheduled tweet ledger\n\n[skip ci]",
+      tree: tree.sha,
+      parents: [],
+    }
+  );
+  await octokit.request("POST /repos/{owner}/{repo}/git/refs", {
+    ...repo(state),
+    ref: `refs/heads/${LEDGER_BRANCH}`,
+    sha: commit.sha,
+  });
+  return blob.sha;
 }
 
 function sortKeys(entries) {

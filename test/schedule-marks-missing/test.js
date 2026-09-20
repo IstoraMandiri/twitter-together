@@ -35,7 +35,7 @@ nock("https://api.github.com", {
   reqheaders: { authorization: "token secret123" },
 })
   .get(LEDGER)
-  .query({ ref: "main" })
+  .query({ ref: "published-tweets" })
   .reply(200, {
     sha: "ledgersha0",
     content: Buffer.from(

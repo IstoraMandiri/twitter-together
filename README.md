@@ -276,13 +276,15 @@ This needs no credentials beyond the ones the repository already has. Timing is 
 interval, and GitHub often delays scheduled runs, so treat the scheduled time as "not before" rather
 than exact. `workflow_dispatch` lets a maintainer publish due tweets without waiting for the next run.
 
-Which tweets have been published is recorded in `.github/published-tweets.json`, committed by the
-workflow. Each tweet is claimed in that file _before_ it is sent, so a run that dies midway can never
+Which tweets have been published is recorded in `.github/published-tweets.json` on a `published-tweets`
+branch, committed by the workflow. It lives on its own branch because a protected default branch (pull
+requests only) would block the workflow from writing to it; the branch is created automatically on first
+use. Each tweet is claimed in that file _before_ it is sent, so a run that dies midway can never
 publish the same tweet twice. The cost of that guarantee is that an interrupted run may leave a tweet
 stuck as `"publishing"`; remove its entry from the file to release it. A tweet X rejects is recorded
 as `"failed"` with the reason, and is not retried until its entry is removed.
 
-The ledger path can be changed with the `SCHEDULE_LEDGER_PATH` environment variable.
+The ledger path and branch can be changed with the `SCHEDULE_LEDGER_PATH` and `SCHEDULE_LEDGER_BRANCH` environment variables.
 
 To include media items with your tweet, include the `media` frontmatter item as an array with each item having a `file` property and an optional `alt` property.
 The `file` property should be the name of a file within the `media` directory of your repository (same level as the `tweets` directory).

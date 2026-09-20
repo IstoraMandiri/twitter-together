@@ -49,8 +49,11 @@ nock("https://api.github.com", {
   .get(
     "/repos/twitter-together/action/contents/.github%2Fpublished-tweets.json"
   )
-  .query({ ref: "main" })
+  .query({ ref: "published-tweets" })
   .reply(404)
+  // branch exists, file does not
+  .get("/repos/twitter-together/action/git/ref/heads%2Fpublished-tweets")
+  .reply(200, { ref: "refs/heads/published-tweets" })
   .put(
     "/repos/twitter-together/action/contents/.github%2Fpublished-tweets.json",
     (body) => {

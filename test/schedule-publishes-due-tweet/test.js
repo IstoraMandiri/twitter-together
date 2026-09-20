@@ -34,10 +34,41 @@ const decode = (content) =>
 nock("https://api.github.com", {
   reqheaders: { authorization: "token secret123" },
 })
-  // no ledger yet
+  // no ledger branch yet: it is created as an orphan holding an empty ledger
   .get(LEDGER)
-  .query({ ref: "main" })
+  .query({ ref: "published-tweets" })
   .reply(404)
+  .get("/repos/twitter-together/action/git/ref/heads%2Fpublished-tweets")
+  .reply(404)
+  .post("/repos/twitter-together/action/git/blobs", (body) => {
+    tap.equal(body.content, "{}\n");
+    return true;
+  })
+  .reply(201, { sha: "blobsha" })
+  .post("/repos/twitter-together/action/git/trees", (body) => {
+    tap.same(body.tree, [
+      {
+        path: ".github/published-tweets.json",
+        mode: "100644",
+        type: "blob",
+        sha: "blobsha",
+      },
+    ]);
+    return true;
+  })
+  .reply(201, { sha: "treesha" })
+  .post("/repos/twitter-together/action/git/commits", (body) => {
+    tap.equal(body.tree, "treesha");
+    tap.same(body.parents, []);
+    return true;
+  })
+  .reply(201, { sha: "commitsha" })
+  .post("/repos/twitter-together/action/git/refs", (body) => {
+    tap.equal(body.ref, "refs/heads/published-tweets");
+    tap.equal(body.sha, "commitsha");
+    return true;
+  })
+  .reply(201)
 
   // claim
   .put(LEDGER, (body) => {
@@ -48,9 +79,10 @@ nock("https://api.github.com", {
       entries["tweets/scheduled.tweet"].scheduled,
       "2020-01-02T03:04:00.000Z"
     );
-    tap.equal(body.branch, "main");
+    tap.equal(body.branch, "published-tweets");
     tap.match(body.message, /Claim 1 scheduled tweet/);
     tap.match(body.message, /\[skip ci\]/);
+    tap.equal(body.sha, "blobsha", "updates the file created with the branch");
     return true;
   })
   .reply(201, { content: { sha: "ledgersha1" } })

@@ -35,13 +35,27 @@ nock("https://api.github.com", {
   reqheaders: { authorization: "token secret123" },
 })
   .get(LEDGER)
-  .query({ ref: "main" })
+  .query({ ref: "published-tweets" })
   .reply(200, {
     sha: "ledgersha0",
     content: Buffer.from("{}", "utf8").toString("base64"),
-  });
+  })
+  // the future tweet is not in the ledger yet: queued, not published
+  .put(LEDGER, (body) => {
+    const entries = decode(body.content);
+    tap.same(Object.keys(entries), ["tweets/future.tweet"]);
+    tap.equal(entries["tweets/future.tweet"].status, "pending");
+    tap.equal(
+      entries["tweets/future.tweet"].scheduled,
+      "2099-01-02T03:04:00.000Z"
+    );
+    tap.equal(body.sha, "ledgersha0");
+    tap.match(body.message, /Queue 1 scheduled tweet/);
+    return true;
+  })
+  .reply(200, { content: { sha: "ledgersha1" } });
 
-// no PUT and no twitter calls are expected
+// no twitter calls are expected
 
 process.on("exit", (code) => {
   tap.equal(code, 0);
