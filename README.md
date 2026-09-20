@@ -232,9 +232,10 @@ so YAML does not turn it into a number.
 > `pull_request` / `pull_request_target` job to have the preview verify that referenced posts exist and satisfy
 > this rule before the pull request is merged. This uses X's public syndication endpoint and does not need API credentials.
 
-An optional `schedule` frontmatter item is shown in the preview for information. It does **not** delay publishing:
-tweets are published when the pull request is merged, so pair it with something like
-[merge-schedule-action](https://github.com/gr2m/merge-schedule-action) to merge at the scheduled time.
+### Scheduled tweets
+
+A tweet with a `schedule` front matter item is **not** published when its pull request is merged.
+Instead it is published by a separate workflow once the scheduled time has passed.
 
 ```tweet
 ---
@@ -243,6 +244,45 @@ schedule: 2030-01-02T03:04:00Z
 
 Future news!
 ```
+
+Add a second workflow to the repository to publish them:
+
+```yml
+name: Publish scheduled tweets
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: publish-scheduled-tweets
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: twitter-together/action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
+          TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
+          TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
+          TWITTER_API_SECRET_KEY: ${{ secrets.TWITTER_API_SECRET_KEY }}
+```
+
+This needs no credentials beyond the ones the repository already has. Timing is limited by the cron
+interval, and GitHub often delays scheduled runs, so treat the scheduled time as "not before" rather
+than exact. `workflow_dispatch` lets a maintainer publish due tweets without waiting for the next run.
+
+Which tweets have been published is recorded in `.github/published-tweets.json`, committed by the
+workflow. Each tweet is claimed in that file _before_ it is sent, so a run that dies midway can never
+publish the same tweet twice. The cost of that guarantee is that an interrupted run may leave a tweet
+stuck as `"publishing"`; remove its entry from the file to release it. A tweet X rejects is recorded
+as `"failed"` with the reason, and is not retried until its entry is removed.
+
+The ledger path can be changed with the `SCHEDULE_LEDGER_PATH` environment variable.
 
 To include media items with your tweet, include the `media` frontmatter item as an array with each item having a `file` property and an optional `alt` property.
 The `file` property should be the name of a file within the `media` directory of your repository (same level as the `tweets` directory).
