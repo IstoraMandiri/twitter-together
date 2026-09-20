@@ -51,7 +51,7 @@ nock("https://api.github.com", {
     (body) => {
       tap.equal(
         body.body,
-        "Tweeted:\n\n- https://twitter.com/gr2m/status/0000000000000000001"
+        "Tweeted:\n\n- https://x.com/gr2m/status/0000000000000000001"
       );
       return true;
     }

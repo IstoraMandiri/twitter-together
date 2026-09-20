@@ -1,6 +1,207 @@
 /******/ (() => { // webpackBootstrap
 /******/ 	var __webpack_modules__ = ({
 
+/***/ 4770:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+module.exports = checkReferences;
+
+const lookupTweet = __nccwpck_require__(7014);
+const { parseTweetRef } = __nccwpck_require__(8045);
+
+/**
+ * Verify that the posts referenced by a parsed tweet (reply / retweet / quote)
+ * exist, and that X's policy for replies and quotes is satisfied:
+ *
+ *   "You can only reply to or quote posts where you are mentioned or are the author."
+ *   https://api.x.com/2/problems/not-authorized-for-resource
+ *
+ * @param {object} parsed  result of parseTweetFileContent
+ * @param {string} account the handle of the posting account, without "@"
+ * @returns {Promise<{ errors: string[], warnings: string[] }>}
+ */
+async function checkReferences(parsed, account) {
+  const errors = [];
+  const warnings = [];
+  const handle = String(account || "")
+    .replace(/^@/, "")
+    .toLowerCase();
+
+  let tweet = parsed;
+  while (tweet) {
+    if (tweet.reply) await check(tweet.reply, "reply");
+    if (tweet.retweet)
+      await check(tweet.retweet, tweet.text ? "quote" : "retweet");
+    tweet = tweet.thread;
+  }
+
+  return { errors, warnings };
+
+  async function check(ref, kind) {
+    const { id, username } = parseTweetRef(ref);
+    let post;
+    try {
+      post = await lookupTweet(id);
+    } catch (error) {
+      warnings.push(
+        `Could not verify ${ref} (${error.message}). It will be checked again when the tweet is published.`
+      );
+      return;
+    }
+
+    if (!post) {
+      errors.push(
+        `Referenced post ${ref} could not be found. It may have been deleted, or the account may be protected.`
+      );
+      return;
+    }
+
+    if (username && username.toLowerCase() !== post.username.toLowerCase()) {
+      warnings.push(
+        `${ref} was written by @${post.username}, not @${username}. The post id is what matters, but double check the link.`
+      );
+    }
+
+    if (!handle || kind === "retweet") return;
+
+    const author = post.username.toLowerCase();
+    const mentioned = post.mentions.some((m) => m.toLowerCase() === handle);
+    if (author === handle || mentioned) return;
+
+    const verb = kind === "reply" ? "reply to" : "quote";
+    errors.push(
+      `X only allows @${account} to ${verb} posts that were written by @${account} or that mention @${account}. ` +
+        `${ref} was written by @${post.username} and does not mention @${account}. ` +
+        (kind === "quote"
+          ? "Remove the text to make this a plain retweet, or write a standalone tweet that links to the post instead."
+          : "Write a standalone tweet that links to the post instead.")
+    );
+  }
+}
+
+
+/***/ }),
+
+/***/ 863:
+/***/ ((module) => {
+
+module.exports = formatError;
+
+/**
+ * Turn an error thrown by twitter-api-v2 (or anything else) into a message
+ * that includes the detail X sends back, e.g.
+ *   Request failed with code 403: You can only reply to or quote posts where you are mentioned or are the author.
+ */
+function formatError(error) {
+  if (!error) return "Unknown error";
+  if (typeof error === "string") return error;
+
+  const parts = [error.message || String(error)];
+  const data = error.data;
+
+  if (data && typeof data === "object") {
+    if (data.detail) parts.push(data.detail);
+    else if (data.title) parts.push(data.title);
+    if (Array.isArray(data.errors)) {
+      data.errors.forEach((item) => {
+        if (item && item.message) parts.push(item.message);
+      });
+    }
+  }
+
+  return parts.filter(Boolean).join(": ");
+}
+
+
+/***/ }),
+
+/***/ 7014:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+module.exports = lookupTweet;
+module.exports.syndicationToken = syndicationToken;
+
+const https = __nccwpck_require__(5687);
+
+// X's syndication endpoint (used by embedded timelines and the react-tweet
+// library) returns public post data without API credentials. The token is
+// derived from the id; this is the same derivation react-tweet uses.
+// It is not officially documented, so callers must treat failures as
+// "unknown" rather than "invalid".
+const SYNDICATION_HOST = "cdn.syndication.twimg.com";
+
+function syndicationToken(id) {
+  return ((Number(id) / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, "");
+}
+
+function getJson(url, timeout) {
+  return new Promise((resolve, reject) => {
+    let timer;
+    const done = (fn) => (value) => {
+      clearTimeout(timer);
+      fn(value);
+    };
+    resolve = done(resolve);
+    reject = done(reject);
+    const req = https.get(
+      url,
+      { headers: { "user-agent": "twitter-together" } },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => (body += chunk));
+        res.on("end", () => {
+          if (res.statusCode === 404) return resolve(null);
+          if (res.statusCode !== 200)
+            return reject(
+              new Error(`Lookup failed with status ${res.statusCode}`)
+            );
+          try {
+            resolve(JSON.parse(body));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      }
+    );
+    req.on("error", reject);
+    timer = setTimeout(
+      () => req.destroy(new Error("Lookup timed out")),
+      timeout
+    );
+  });
+}
+
+/**
+ * Look up a public post by id.
+ *
+ * @returns {Promise<null | { id: string, username: string, text: string, mentions: string[] }>}
+ *   `null` if the post does not exist (deleted, protected or never existed).
+ * @throws on network / unexpected errors
+ */
+async function lookupTweet(id, { timeout = 10000 } = {}) {
+  const url = `https://${SYNDICATION_HOST}/tweet-result?id=${encodeURIComponent(
+    id
+  )}&token=${syndicationToken(id)}`;
+
+  const data = await getJson(url, timeout);
+
+  // deleted / protected posts come back as a tombstone or an empty object
+  if (!data || data.__typename !== "Tweet" || !data.user) return null;
+
+  return {
+    id: data.id_str || String(id),
+    username: data.user.screen_name,
+    text: data.text || "",
+    mentions: ((data.entities && data.entities.user_mentions) || [])
+      .map((mention) => mention.screen_name)
+      .filter(Boolean),
+  };
+}
+
+
+/***/ }),
+
 /***/ 5935:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -12,7 +213,7 @@ const { existsSync } = __nccwpck_require__(7147);
 const { join } = __nccwpck_require__(1017);
 const { parseTweet } = __nccwpck_require__(6223);
 const { load } = __nccwpck_require__(1917);
-const parseTweetId = __nccwpck_require__(8045);
+const { parseTweetRef } = __nccwpck_require__(8045);
 
 const OPTION_REGEX = /^\(\s?\)\s+/;
 const FRONT_MATTER_REGEX = new RegExp(
@@ -81,21 +282,25 @@ function parseTweetFileContent(text, dir, isThread = false) {
       } characters`
     );
 
-  // TODO: Support schedule from options
+  // NOTE: `schedule` is informational only. Publishing on a schedule is
+  // handled by merging the pull request at the scheduled time.
   return {
     poll: options.poll,
     media: options.media,
     thread: options.thread,
     reply: options.reply,
     retweet: options.retweet,
+    schedule: options.schedule,
     text,
     ...parsed,
   };
 }
 
 function validateOptions(options, text, dir) {
-  if (options.retweet || options.reply)
-    parseTweetId(options.retweet || options.reply);
+  // normalise references to https://x.com/<user>/status/<id>
+  // throws "Invalid tweet reference" if the URL / id cannot be parsed
+  if (options.retweet) options.retweet = parseTweetRef(options.retweet).url;
+  if (options.reply) options.reply = parseTweetRef(options.reply).url;
 
   if (options.retweet && !text && options.poll)
     throw new Error("Cannot attach a poll to a retweet");
@@ -141,10 +346,15 @@ function getOptionsFromFrontMatter(frontMatter, options, dir) {
 
   if (typeof parsedFrontMatter["thread-delimiter"] === "string")
     options.threadDelimiter = parsedFrontMatter["thread-delimiter"];
-  if (typeof parsedFrontMatter.reply === "string")
-    options.reply = parsedFrontMatter.reply;
-  if (typeof parsedFrontMatter.retweet === "string")
-    options.retweet = parsedFrontMatter.retweet;
+  for (const key of ["reply", "retweet"]) {
+    const value = parsedFrontMatter[key];
+    if (typeof value === "string") options[key] = value;
+    // YAML parses an unquoted post id as a number, which loses precision
+    if (typeof value === "number")
+      throw new Error(
+        `Invalid tweet reference: ${value}. Use the full post URL, or wrap a bare post id in quotes.`
+      );
+  }
 
   if (Array.isArray(parsedFrontMatter.media))
     options.media = parsedFrontMatter.media.reduce((arr, item) => {
@@ -156,7 +366,11 @@ function getOptionsFromFrontMatter(frontMatter, options, dir) {
       return arr;
     }, []);
 
-  if (typeof parsedFrontMatter.schedule === "string") {
+  // js-yaml turns unquoted ISO timestamps into Date objects already
+  if (
+    typeof parsedFrontMatter.schedule === "string" ||
+    parsedFrontMatter.schedule instanceof Date
+  ) {
     const schedule = new Date(parsedFrontMatter.schedule);
     if (!isNaN(schedule.getTime())) options.schedule = schedule;
   }
@@ -189,20 +403,45 @@ function withLastLineRemoved(text) {
 /***/ ((module) => {
 
 module.exports = parseTweetId;
+module.exports.parseTweetRef = parseTweetRef;
+module.exports.canonicalTweetUrl = canonicalTweetUrl;
 
-const TWEET_REGEX = /^https:\/\/twitter\.com\/[^/]+\/status\/(\d+)$/;
-
-// TODO allow differently formatted URLs and tweet ids ?
+// Accepts the many shapes a post URL can take when copy-pasted:
+//   https://x.com/user/status/123
+//   https://twitter.com/user/status/123?s=20&t=abc
+//   https://mobile.twitter.com/user/status/123#m
+//   https://www.x.com/user/status/123/photo/1
+//   https://x.com/i/web/status/123
+//   123 (a bare post id)
 // https://github.com/twitter-together/action/issues/221
+const TWEET_URL_REGEX =
+  /^(?:https?:\/\/)?(?:(?:www|mobile)\.)?(?:twitter\.com|x\.com)\/([A-Za-z0-9_]{1,15})(?:\/web)?\/status(?:es)?\/(\d+)(?:\/[^?#]*)?\/?(?:[?#].*)?$/i;
+const TWEET_ID_REGEX = /^\d+$/;
 
-// TODO: Should we check if the referenced tweet actually exists?
+function parseTweetRef(tweetRef) {
+  const ref = String(tweetRef || "").trim();
 
-function parseTweetId(tweetRef) {
-  const match = tweetRef.match(TWEET_REGEX);
+  if (TWEET_ID_REGEX.test(ref)) {
+    return { id: ref, username: null, url: canonicalTweetUrl(null, ref) };
+  }
+
+  const match = ref.match(TWEET_URL_REGEX);
   if (!match) {
     throw new Error(`Invalid tweet reference: ${tweetRef}`);
   }
-  return match[1];
+
+  const [, username, id] = match;
+  // https://x.com/i/web/status/123 does not carry the author
+  const author = username.toLowerCase() === "i" ? null : username;
+  return { id, username: author, url: canonicalTweetUrl(author, id) };
+}
+
+function canonicalTweetUrl(username, id) {
+  return `https://x.com/${username || "i/web"}/status/${id}`;
+}
+
+function parseTweetId(tweetRef) {
+  return parseTweetRef(tweetRef).id;
 }
 
 
@@ -217,6 +456,7 @@ const { TwitterApi } = __nccwpck_require__(9360);
 const mime = __nccwpck_require__(3583);
 
 const parseTweetId = __nccwpck_require__(8045);
+const { parseTweetRef, canonicalTweetUrl } = __nccwpck_require__(8045);
 
 async function tweet({ twitterCredentials }, tweetData, tweetFile) {
   const client = new TwitterApi(twitterCredentials);
@@ -229,8 +469,8 @@ async function tweet({ twitterCredentials }, tweetData, tweetFile) {
 
 async function handleTweet(client, self, tweet, name) {
   if (tweet.retweet && !tweet.text) {
-    const tweetId = parseTweetId(tweet.retweet);
-    if (tweetId) return createRetweet(client, self, tweetId);
+    const { id, username } = parseTweetRef(tweet.retweet);
+    if (id) return createRetweet(client, self, id, username);
   }
 
   const tweetData = {
@@ -294,25 +534,33 @@ async function createTweet(client, self, options) {
     if (data.errors) throw data.errors;
     return {
       text: data.data.text,
-      url: `https://twitter.com/${self.username}/status/${data.data.id}`,
+      url: canonicalTweetUrl(self.username, data.data.id),
     };
   });
 }
 
-function createRetweet(client, self, id) {
+function createRetweet(client, self, id, username) {
   return client.v2.retweet(self.id, id).then(async (data) => {
     if (data.errors) throw data.errors;
     if (!data.data.retweeted) throw new Error("Retweet failed");
 
-    const other = await client.v2.singleTweet(id, { expansions: "author_id" });
-    if (other.errors) throw other.errors;
-    const otherUser = other.includes.users.find(
-      (user) => user.id === other.data.author_id
-    );
+    let author = username;
+    if (!author) {
+      // only look the post up if the reference did not include the author
+      const other = await client.v2.singleTweet(id, {
+        expansions: "author_id",
+      });
+      if (other.errors) throw other.errors;
+      const otherUser = other.includes.users.find(
+        (user) => user.id === other.data.author_id
+      );
+      author = otherUser.username;
+    }
 
+    const url = canonicalTweetUrl(author, id);
     return {
-      retweet: `https://twitter.com/${otherUser.username}/status/${id}`,
-      url: `https://twitter.com/${otherUser.username}/status/${id}`, // TODO: Twitter does not return the id of the retweet itself
+      retweet: url,
+      url, // TODO: X does not return the id of the retweet itself
     };
   });
 }
@@ -417,6 +665,7 @@ module.exports = generateSummary;
 const { autoLink } = __nccwpck_require__(6223);
 
 const parseTweetFileContent = __nccwpck_require__(5935);
+const checkReferences = __nccwpck_require__(4770);
 const getNewTweets = __nccwpck_require__(9305);
 
 async function generateSummary(state, plainText = false) {
@@ -424,17 +673,35 @@ async function generateSummary(state, plainText = false) {
 
   const newTweets = await getNewTweets(state);
 
-  const parsedTweets = newTweets.map((tweet) => {
+  // when the posting account is known, verify referenced posts exist and
+  // that X will let the account reply to / quote them
+  const account = (process.env.TWITTER_ACCOUNT || "").replace(/^@/, "");
+
+  const parsedTweets = [];
+  for (const tweet of newTweets) {
     try {
-      return parseTweetFileContent(tweet, dir);
+      const parsed = parseTweetFileContent(tweet, dir);
+      if (account) {
+        const { errors, warnings } = await checkReferences(parsed, account);
+        parsed.warnings = warnings;
+        if (errors.length) {
+          parsedTweets.push({
+            error: errors.join("\n\n"),
+            valid: false,
+            text: tweet,
+          });
+          continue;
+        }
+      }
+      parsedTweets.push(parsed);
     } catch (error) {
-      return {
+      parsedTweets.push({
         error: error.message,
         valid: false,
         text: tweet,
-      };
+      });
     }
-  });
+  }
 
   return {
     count: parsedTweets.length,
@@ -464,7 +731,10 @@ function summarizeTweet(state, threading = false) {
 
   if (tweet.reply) text = `Replying to ${tweet.reply}\n\n${text}`;
 
-  if (tweet.retweet) text = `Retweeting ${tweet.retweet}\n\n${text}`.trim();
+  if (tweet.retweet)
+    text = `${tweet.text ? "Quoting" : "Retweeting"} ${
+      tweet.retweet
+    }\n\n${text}`.trim();
 
   if (tweet.media.length) {
     const media = tweet.media
@@ -474,12 +744,22 @@ function summarizeTweet(state, threading = false) {
           return `- ${fileName}${alt && ` [${alt}]`}`;
         } else {
           const { repo, sha } = payload.pull_request.head;
-          return `${alt || ""}\n<img src="https://raw.githubusercontent.com/${repo.owner.login}/${repo.name}/${sha}${fileName}" height="200" />`;
+          return `${alt || ""}\n<img src="https://raw.githubusercontent.com/${
+            repo.owner.login
+          }/${repo.name}/${sha}${fileName}" height="200" />`;
         }
       })
       .join(plainText ? "\n" : "\n\n");
     text = `${media}\n\n${text}`.trim();
   }
+
+  if (!threading && tweet.schedule)
+    text = `🗓 Scheduled for ${tweet.schedule.toISOString()}\n\n${text}`.trim();
+
+  if (!threading && tweet.warnings && tweet.warnings.length)
+    text = `${text}\n\n${tweet.warnings
+      .map((warning) => `> ⚠️ ${warning}`)
+      .join("\n")}`.trim();
 
   if (tweet.thread || threading) {
     const count = threading ? threading + 1 : 1;
@@ -691,8 +971,11 @@ const getNewTweets = __nccwpck_require__(4387);
 const isSetupDone = __nccwpck_require__(5089);
 const setup = __nccwpck_require__(9104);
 const tweet = __nccwpck_require__(2179);
+const formatError = __nccwpck_require__(863);
 
 const parseTweetFileContent = __nccwpck_require__(5935);
+const { readLedger, writeLedger } = __nccwpck_require__(5451);
+const { isClaimed } = __nccwpck_require__(8369);
 
 async function handlePush(state) {
   const { toolkit, octokit, payload, ref } = state;
@@ -738,9 +1021,24 @@ async function handlePush(state) {
   // post all the tweets
   const tweetUrls = [];
   const tweetErrors = [];
+  const scheduled = [];
   for (let i = 0; i < newTweets.length; i++) {
     try {
       const parsed = parseTweetFileContent(newTweets[i].text, state.dir);
+
+      // scheduled tweets are published by the scheduled workflow, not here
+      if (parsed.schedule) {
+        toolkit.info(
+          `Scheduled for ${parsed.schedule.toISOString()}: ${
+            newTweets[i].filename
+          }`
+        );
+        scheduled.push({
+          filename: newTweets[i].filename,
+          scheduled: parsed.schedule.toISOString(),
+        });
+        continue;
+      }
 
       toolkit.info(`Tweeting: ${parsed.text}`);
       if (parsed.poll) {
@@ -758,9 +1056,10 @@ async function handlePush(state) {
         result = result.thread;
       }
     } catch (error) {
+      const failure = Array.isArray(error) ? error[0] : error;
       console.log(`error`);
-      console.log(error[0] || error);
-      tweetErrors.push(error[0] || error);
+      console.log(failure);
+      tweetErrors.push(failure);
     }
   }
 
@@ -768,11 +1067,35 @@ async function handlePush(state) {
     await addComment(state, "Tweeted:\n\n- " + tweetUrls.join("\n- "));
   }
 
+  if (scheduled.length) {
+    // queue them, so whoever triggers the scheduled publish can see what is
+    // waiting without scanning every tweet file
+    const ledger = await readLedger(state);
+    const queuedAt = new Date().toISOString();
+    scheduled.forEach(({ filename, scheduled: at }) => {
+      if (isClaimed(ledger.entries[filename])) return;
+      ledger.entries[filename] = { status: "pending", scheduled: at, queuedAt };
+    });
+    await writeLedger(
+      state,
+      ledger,
+      `Queue ${scheduled.length} scheduled tweet(s)`
+    );
+
+    await addComment(
+      state,
+      "Scheduled, will be published automatically when due:\n\n- " +
+        scheduled
+          .map(({ filename, scheduled: at }) => `${filename} (${at})`)
+          .join("\n- ")
+    );
+  }
+
   if (tweetErrors.length) {
     tweetErrors.forEach((error) => toolkit.error(inspect(error)));
     await addComment(
       state,
-      "Errors:\n\n- " + tweetErrors.map((error) => error.message).join("\n- ")
+      "Errors:\n\n- " + tweetErrors.map(formatError).join("\n- ")
     );
     return toolkit.setFailed("Error tweeting");
   }
@@ -881,6 +1204,319 @@ Enjoy!`,
     base: payload.repository.default_branch,
   });
   toolkit.info(`Setup pull request created: ${pr.html_url}`);
+}
+
+
+/***/ }),
+
+/***/ 8369:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+module.exports = getDueTweets;
+module.exports.getSchedule = getSchedule;
+module.exports.scanTweets = scanTweets;
+module.exports.selectDue = selectDue;
+module.exports.isClaimed = isClaimed;
+
+const { readdirSync, readFileSync } = __nccwpck_require__(7147);
+const { join, relative } = __nccwpck_require__(1017);
+const { load } = __nccwpck_require__(1917);
+
+// Tolerant of CRLF, and deliberately cheap: most tweet files are not
+// scheduled and must not be fully parsed (their media may have been removed
+// since, which would throw).
+const FRONT_MATTER_REGEX = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
+
+function getSchedule(text) {
+  const match = String(text).trim().match(FRONT_MATTER_REGEX);
+  if (!match) return null;
+  let parsed;
+  try {
+    parsed = load(match[1]);
+  } catch (error) {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const { schedule } = parsed;
+  // js-yaml turns an unquoted ISO timestamp into a Date
+  if (typeof schedule !== "string" && !(schedule instanceof Date)) return null;
+  const date = new Date(schedule);
+  return isNaN(date.getTime()) ? null : date;
+}
+
+function walk(dir) {
+  const files = [];
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return files;
+    throw error;
+  }
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...walk(path));
+    else if (entry.isFile() && entry.name.endsWith(".tweet")) files.push(path);
+  }
+  return files;
+}
+
+/**
+ * All tweet files that carry a `schedule`, whatever their date.
+ *
+ * @returns {{ filename: string, text: string, schedule: Date }[]}
+ */
+function scanTweets({ dir }) {
+  return walk(join(dir, "tweets"))
+    .map((path) => {
+      const text = readFileSync(path, "utf8");
+      return {
+        // posix style, matching the paths used elsewhere in the action
+        filename: relative(dir, path).split(/[\\/]/).join("/"),
+        text,
+        schedule: getSchedule(text),
+      };
+    })
+    .filter((tweet) => tweet.schedule);
+}
+
+// "pending" is written when the tweet is merged and only means "queued";
+// anything else means a publish run has already taken ownership of it
+function isClaimed(entry) {
+  return !!entry && entry.status !== "pending";
+}
+
+function selectDue(tweets, entries = {}, now = new Date()) {
+  return tweets
+    .filter(
+      (tweet) => tweet.schedule <= now && !isClaimed(entries[tweet.filename])
+    )
+    .sort((a, b) => a.schedule - b.schedule);
+}
+
+/**
+ * Find scheduled tweets that are due and have not been claimed yet.
+ */
+function getDueTweets(state, entries = {}, now = new Date()) {
+  return selectDue(scanTweets(state), entries, now);
+}
+
+
+/***/ }),
+
+/***/ 164:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+module.exports = handleSchedule;
+
+const { inspect } = __nccwpck_require__(3837);
+
+const tweet = __nccwpck_require__(2179);
+const formatError = __nccwpck_require__(863);
+const parseTweetFileContent = __nccwpck_require__(5935);
+
+const { scanTweets, selectDue } = __nccwpck_require__(8369);
+const { readLedger, writeLedger, LEDGER_PATH } = __nccwpck_require__(5451);
+
+/**
+ * Publish tweets whose `schedule` front matter is due.
+ *
+ * Runs from a `schedule` (cron) or `workflow_dispatch` trigger. Scheduled
+ * tweets are deliberately NOT published when their pull request is merged;
+ * this is the only place they are sent.
+ *
+ * Every tweet is claimed in the ledger BEFORE it is published. If the run
+ * dies midway the tweet stays claimed and is never sent twice; the worst
+ * case is a tweet that has to be released by hand, which is preferable to
+ * publishing it twice.
+ */
+async function handleSchedule(state) {
+  const { toolkit, octokit } = state;
+
+  // on request errors, log the request options and error, then end process
+  octokit.hook.error("request", (error, options) => {
+    if (options.request.expectStatus === error.status) throw error;
+    toolkit.info(error);
+    toolkit.setFailed(error.stack);
+    process.exit();
+  });
+
+  let ledger = await readLedger(state);
+
+  const now = new Date();
+  const scheduledTweets = scanTweets(state);
+  const due = selectDue(scheduledTweets, ledger.entries, now);
+
+  // a tweet that was queued on merge but whose file has since been removed
+  // must not stay "pending" forever, or callers would keep asking for it
+  const present = new Set(scheduledTweets.map(({ filename }) => filename));
+  const missing = Object.entries(ledger.entries)
+    .filter(
+      ([filename, entry]) =>
+        entry.status === "pending" && !present.has(filename)
+    )
+    .map(([filename]) => filename);
+  missing.forEach((filename) => {
+    ledger.entries[filename].status = "missing";
+    ledger.entries[filename].missingAt = now.toISOString();
+  });
+
+  if (due.length === 0) {
+    if (missing.length) {
+      toolkit.info(`Marked ${missing.length} removed tweet(s) as missing`);
+      await writeLedger(
+        state,
+        ledger,
+        `Mark ${missing.length} removed scheduled tweet(s) as missing`
+      );
+    }
+    return toolkit.info("No scheduled tweets are due");
+  }
+  toolkit.info(
+    `${due.length} scheduled tweet(s) due: ${due
+      .map(({ filename }) => filename)
+      .join(", ")}`
+  );
+
+  // claim them all up front, so a crash cannot cause a double publish
+  const claimedAt = now.toISOString();
+  due.forEach(({ filename, schedule }) => {
+    ledger.entries[filename] = {
+      ...ledger.entries[filename],
+      status: "publishing",
+      scheduled: schedule.toISOString(),
+      claimedAt,
+    };
+  });
+  ledger = await writeLedger(
+    state,
+    ledger,
+    `Claim ${due.length} scheduled tweet(s)`
+  );
+
+  const errors = [];
+  for (const item of due) {
+    const entry = ledger.entries[item.filename];
+    try {
+      const parsed = parseTweetFileContent(item.text, state.dir);
+      toolkit.info(`Tweeting (scheduled): ${parsed.text}`);
+
+      const urls = [];
+      let result = await tweet(state, parsed, item.filename);
+      while (result) {
+        toolkit.info(`tweeted: ${result.url}`);
+        urls.push(result.url);
+        result = result.thread;
+      }
+
+      entry.status = "published";
+      entry.publishedAt = new Date().toISOString();
+      entry.urls = urls;
+    } catch (error) {
+      const failure = Array.isArray(error) ? error[0] : error;
+      toolkit.error(inspect(failure));
+      entry.status = "failed";
+      entry.failedAt = new Date().toISOString();
+      entry.error = formatError(failure);
+      errors.push(`${item.filename}: ${entry.error}`);
+    }
+  }
+
+  // record the outcome; retry on conflict so results are never lost
+  await updateWithRetry(
+    state,
+    ledger,
+    `Publish ${due.length} scheduled tweet(s)`
+  );
+
+  if (errors.length) {
+    return toolkit.setFailed(
+      `Error publishing scheduled tweets:\n- ${errors.join("\n- ")}\n\n` +
+        `Fix the tweet and remove its entry from ${LEDGER_PATH} to try again.`
+    );
+  }
+}
+
+async function updateWithRetry(state, ledger, message, attempts = 3) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await writeLedger(state, ledger, message);
+    } catch (error) {
+      // 409: someone else updated the ledger since we read it. Re-read and
+      // reapply our entries, which are authoritative for these files.
+      if (error.status !== 409 || attempt >= attempts) throw error;
+      state.toolkit.info(`Ledger conflict, retrying (${attempt})`);
+      const latest = await readLedger(state);
+      ledger.sha = latest.sha;
+      ledger.entries = { ...latest.entries, ...ledger.entries };
+    }
+  }
+}
+
+
+/***/ }),
+
+/***/ 5451:
+/***/ ((module) => {
+
+// Records which scheduled tweets have already been claimed / published, so a
+// tweet is never published twice. Stored in the repository so that it
+// survives between workflow runs, and updated through the contents API so
+// that concurrent updates are rejected rather than silently merged.
+const LEDGER_PATH =
+  process.env.SCHEDULE_LEDGER_PATH || ".github/published-tweets.json";
+
+module.exports = { readLedger, writeLedger, LEDGER_PATH };
+
+async function readLedger({ octokit, payload }) {
+  try {
+    const { data } = await octokit.request(
+      "GET /repos/{owner}/{repo}/contents/{path}",
+      {
+        owner: payload.repository.owner.login,
+        repo: payload.repository.name,
+        path: LEDGER_PATH,
+        ref: payload.repository.default_branch,
+        headers: { "cache-control": "no-cache" },
+        request: { expectStatus: 404 },
+      }
+    );
+    return {
+      sha: data.sha,
+      entries: JSON.parse(Buffer.from(data.content, "base64").toString("utf8")),
+    };
+  } catch (error) {
+    if (error.status === 404) return { sha: undefined, entries: {} };
+    throw error;
+  }
+}
+
+async function writeLedger({ octokit, payload }, { sha, entries }, message) {
+  const { data } = await octokit.request(
+    "PUT /repos/{owner}/{repo}/contents/{path}",
+    {
+      owner: payload.repository.owner.login,
+      repo: payload.repository.name,
+      path: LEDGER_PATH,
+      branch: payload.repository.default_branch,
+      message: `${message}\n\n[skip ci]`,
+      sha,
+      content: Buffer.from(
+        `${JSON.stringify(sortKeys(entries), null, 2)}\n`,
+        "utf8"
+      ).toString("base64"),
+    }
+  );
+  return { sha: data.content.sha, entries };
+}
+
+function sortKeys(entries) {
+  return Object.keys(entries)
+    .sort()
+    .reduce((acc, key) => {
+      acc[key] = entries[key];
+      return acc;
+    }, {});
 }
 
 
@@ -9368,21 +10004,12 @@ for (var collections = getKeys(DOMIterables), i = 0; i < collections.length; i++
  * This is the web browser implementation of `debug()`.
  */
 
+exports.log = log;
 exports.formatArgs = formatArgs;
 exports.save = save;
 exports.load = load;
 exports.useColors = useColors;
 exports.storage = localstorage();
-exports.destroy = (() => {
-	let warned = false;
-
-	return () => {
-		if (!warned) {
-			warned = true;
-			console.warn('Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.');
-		}
-	};
-})();
 
 /**
  * Colors.
@@ -9543,14 +10170,18 @@ function formatArgs(args) {
 }
 
 /**
- * Invokes `console.debug()` when available.
- * No-op when `console.debug` is not a "function".
- * If `console.debug` is not available, falls back
- * to `console.log`.
+ * Invokes `console.log()` when available.
+ * No-op when `console.log` is not a "function".
  *
  * @api public
  */
-exports.log = console.debug || console.log || (() => {});
+function log(...args) {
+	// This hackery is required for IE8/9, where
+	// the `console.log` function doesn't have 'apply'
+	return typeof console === 'object' &&
+		console.log &&
+		console.log(...args);
+}
 
 /**
  * Save `namespaces`.
@@ -9652,11 +10283,15 @@ function setup(env) {
 	createDebug.enable = enable;
 	createDebug.enabled = enabled;
 	createDebug.humanize = __nccwpck_require__(900);
-	createDebug.destroy = destroy;
 
 	Object.keys(env).forEach(key => {
 		createDebug[key] = env[key];
 	});
+
+	/**
+	* Active `debug` instances.
+	*/
+	createDebug.instances = [];
 
 	/**
 	* The currently active debug mode names, and names to skip.
@@ -9674,7 +10309,7 @@ function setup(env) {
 
 	/**
 	* Selects a color for a debug namespace
-	* @param {String} namespace The namespace string for the debug instance to be colored
+	* @param {String} namespace The namespace string for the for the debug instance to be colored
 	* @return {Number|String} An ANSI color code for the given namespace
 	* @api private
 	*/
@@ -9699,9 +10334,6 @@ function setup(env) {
 	*/
 	function createDebug(namespace) {
 		let prevTime;
-		let enableOverride = null;
-		let namespacesCache;
-		let enabledCache;
 
 		function debug(...args) {
 			// Disabled?
@@ -9731,7 +10363,7 @@ function setup(env) {
 			args[0] = args[0].replace(/%([a-zA-Z%])/g, (match, format) => {
 				// If we encounter an escaped % then don't increase the array index
 				if (match === '%%') {
-					return '%';
+					return match;
 				}
 				index++;
 				const formatter = createDebug.formatters[format];
@@ -9754,36 +10386,31 @@ function setup(env) {
 		}
 
 		debug.namespace = namespace;
+		debug.enabled = createDebug.enabled(namespace);
 		debug.useColors = createDebug.useColors();
-		debug.color = createDebug.selectColor(namespace);
+		debug.color = selectColor(namespace);
+		debug.destroy = destroy;
 		debug.extend = extend;
-		debug.destroy = createDebug.destroy; // XXX Temporary. Will be removed in the next major release.
+		// Debug.formatArgs = formatArgs;
+		// debug.rawLog = rawLog;
 
-		Object.defineProperty(debug, 'enabled', {
-			enumerable: true,
-			configurable: false,
-			get: () => {
-				if (enableOverride !== null) {
-					return enableOverride;
-				}
-				if (namespacesCache !== createDebug.namespaces) {
-					namespacesCache = createDebug.namespaces;
-					enabledCache = createDebug.enabled(namespace);
-				}
-
-				return enabledCache;
-			},
-			set: v => {
-				enableOverride = v;
-			}
-		});
-
-		// Env-specific initialization logic for debug instances
+		// env-specific initialization logic for debug instances
 		if (typeof createDebug.init === 'function') {
 			createDebug.init(debug);
 		}
 
+		createDebug.instances.push(debug);
+
 		return debug;
+	}
+
+	function destroy() {
+		const index = createDebug.instances.indexOf(this);
+		if (index !== -1) {
+			createDebug.instances.splice(index, 1);
+			return true;
+		}
+		return false;
 	}
 
 	function extend(namespace, delimiter) {
@@ -9801,7 +10428,6 @@ function setup(env) {
 	*/
 	function enable(namespaces) {
 		createDebug.save(namespaces);
-		createDebug.namespaces = namespaces;
 
 		createDebug.names = [];
 		createDebug.skips = [];
@@ -9819,10 +10445,15 @@ function setup(env) {
 			namespaces = split[i].replace(/\*/g, '.*?');
 
 			if (namespaces[0] === '-') {
-				createDebug.skips.push(new RegExp('^' + namespaces.slice(1) + '$'));
+				createDebug.skips.push(new RegExp('^' + namespaces.substr(1) + '$'));
 			} else {
 				createDebug.names.push(new RegExp('^' + namespaces + '$'));
 			}
+		}
+
+		for (i = 0; i < createDebug.instances.length; i++) {
+			const instance = createDebug.instances[i];
+			instance.enabled = createDebug.enabled(instance.namespace);
 		}
 	}
 
@@ -9898,14 +10529,6 @@ function setup(env) {
 		return val;
 	}
 
-	/**
-	* XXX DO NOT USE. This is a temporary stub function.
-	* XXX It WILL be removed in the next major release.
-	*/
-	function destroy() {
-		console.warn('Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.');
-	}
-
 	createDebug.enable(createDebug.load());
 
 	return createDebug;
@@ -9953,10 +10576,6 @@ exports.formatArgs = formatArgs;
 exports.save = save;
 exports.load = load;
 exports.useColors = useColors;
-exports.destroy = util.deprecate(
-	() => {},
-	'Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.'
-);
 
 /**
  * Colors.
@@ -10186,9 +10805,7 @@ const {formatters} = module.exports;
 formatters.o = function (v) {
 	this.inspectOpts.colors = this.useColors;
 	return util.inspect(v, this.inspectOpts)
-		.split('\n')
-		.map(str => str.trim())
-		.join(' ');
+		.replace(/\s*\n\s*/g, ' ');
 };
 
 /**
@@ -32149,7 +32766,7 @@ module.exports = JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45,46],"valid"]
 /***/ ((module) => {
 
 "use strict";
-module.exports = JSON.parse('{"i8":"etc-dev-3.1.1"}');
+module.exports = JSON.parse('{"i8":"etc-dev-3.2.0"}');
 
 /***/ })
 
@@ -32202,6 +32819,7 @@ const toolkit = __nccwpck_require__(2186);
 
 const handlePullRequest = __nccwpck_require__(1370);
 const handlePush = __nccwpck_require__(1659);
+const handleSchedule = __nccwpck_require__(164);
 const parseTweetFileContent = __nccwpck_require__(5935);
 const tweet = __nccwpck_require__(2179);
 
@@ -32263,6 +32881,13 @@ async function main() {
   }
   if (trigger === "pull_request" || trigger === "pull_request_target") {
     await handlePullRequest(githubState);
+  }
+  if (
+    trigger === "schedule" ||
+    trigger === "workflow_dispatch" ||
+    trigger === "repository_dispatch"
+  ) {
+    await handleSchedule(githubState);
   }
 }
 

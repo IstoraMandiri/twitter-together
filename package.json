@@ -1,6 +1,6 @@
 {
   "name": "twitter-together",
-  "version": "etc-dev-3.1.1",
+  "version": "etc-dev-3.2.0",
   "description": "A GitHub action to tweet together using pull requests",
   "main": "lib/index.js",
   "scripts": {
@@ -26,7 +26,7 @@
   "devDependencies": {
     "@semantic-release/git": "^10.0.1",
     "@vercel/ncc": "^0.34.0",
-    "nock": "^13.2.9",
+    "nock": "^14.0.17",
     "prettier": "^2.7.1",
     "semantic-release": "^19.0.5",
     "tap": "^16.3.0"
