@@ -51,7 +51,7 @@ index 0000000..d462a1f
 +++ b/tweets/retweet.tweet
 @@ -0,0 +1,5 @@
 +---
-+reply: https://twitter.com/m2rg/status/0000000000000000001
++reply: https://mobile.twitter.com/m2rg/status/0000000000000000001#m
 +---
 +
 +Good idea :)`
@@ -69,7 +69,7 @@ nock("https://api.github.com")
       title: "1 tweet(s)",
       summary: `### ✅ Valid Tweet
 
-Replying to https://twitter.com/m2rg/status/0000000000000000001
+Replying to https://x.com/m2rg/status/0000000000000000001
 
 > Good idea :)`,
     });

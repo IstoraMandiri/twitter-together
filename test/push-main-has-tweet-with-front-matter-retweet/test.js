@@ -51,7 +51,7 @@ nock("https://api.github.com", {
     (body) => {
       tap.equal(
         body.body,
-        "Tweeted:\n\n- https://twitter.com/m2rg/status/0000000000000000001"
+        "Tweeted:\n\n- https://x.com/m2rg/status/0000000000000000001"
       );
       return true;
     }
@@ -75,24 +75,6 @@ nock("https://api.twitter.com")
   .reply(201, {
     data: {
       retweeted: true,
-    },
-  })
-
-  .get("/2/tweets/0000000000000000001?expansions=author_id")
-  .reply(200, {
-    data: {
-      id: "0000000000000000001",
-      text: "",
-      author_id: "456",
-    },
-    includes: {
-      users: [
-        {
-          id: "456",
-          name: "m2rg",
-          username: "m2rg",
-        },
-      ],
     },
   });
 

@@ -198,25 +198,50 @@ poll:
 What is your favorite color?
 ```
 
-To reply to another tweet, include the `reply` frontmatter item with the tweet link that you wish to reply to:
+To reply to another post, include the `reply` frontmatter item with the post link that you wish to reply to:
 
 ```tweet
 ---
-reply: https://twitter.com/gr2m/status/1409601188362809349
+reply: https://x.com/gr2m/status/1409601188362809349
 ---
 
 @gr2m I love your work!
 ```
 
-If you want to quote-retweet another tweet, include the `retweet` frontmatter item with the tweet link that you wish to quote-retweet.
-If you'd prefer to just retweet without quoting, don't provide a tweet body after the frontmatter.
+If you want to quote another post, include the `retweet` frontmatter item with the post link that you wish to quote.
+If you'd prefer to just repost without quoting, don't provide a tweet body after the frontmatter.
 
 ```tweet
 ---
-retweet: https://twitter.com/gr2m/status/1409601188362809349
+retweet: https://x.com/gr2m/status/1409601188362809349
 ---
 
 twitter-together is awesome!
+```
+
+Post links are parsed leniently: `x.com`, `twitter.com` and `mobile.twitter.com` links are accepted, with or without
+tracking parameters (`?s=20`) or fragments (`#m`). A bare post id also works, but must be quoted (`retweet: "1409601188362809349"`)
+so YAML does not turn it into a number.
+
+> **X restricts replies and quotes.** The X API only allows an account to reply to or quote posts that it wrote
+> itself, or that mention it. Attempting anything else fails with
+> `You can only reply to or quote posts where you are mentioned or are the author.`
+> Plain reposts (a `retweet` with no body) are not affected.
+>
+> Set the `TWITTER_ACCOUNT` environment variable (the handle of the posting account, without `@`) on the
+> `pull_request` / `pull_request_target` job to have the preview verify that referenced posts exist and satisfy
+> this rule before the pull request is merged. This uses X's public syndication endpoint and does not need API credentials.
+
+An optional `schedule` frontmatter item is shown in the preview for information. It does **not** delay publishing:
+tweets are published when the pull request is merged, so pair it with something like
+[merge-schedule-action](https://github.com/gr2m/merge-schedule-action) to merge at the scheduled time.
+
+```tweet
+---
+schedule: 2030-01-02T03:04:00Z
+---
+
+Future news!
 ```
 
 To include media items with your tweet, include the `media` frontmatter item as an array with each item having a `file` property and an optional `alt` property.
