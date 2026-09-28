@@ -11,10 +11,14 @@ const { parseTweetRef } = __nccwpck_require__(8045);
 
 /**
  * Verify that the posts referenced by a parsed tweet (reply / retweet / quote)
- * exist, and that X's policy for replies and quotes is satisfied:
+ * exist, and warn when X's policy for replies and quotes may apply:
  *
  *   "You can only reply to or quote posts where you are mentioned or are the author."
  *   https://api.x.com/2/problems/not-authorized-for-resource
+ *
+ * Whether X enforces it can't be known in advance, so this never fails the
+ * preview. Quotes are not affected: they are published with the post link at
+ * the end of the text, which X turns into a quote by itself.
  *
  * @param {object} parsed  result of parseTweetFileContent
  * @param {string} account the handle of the posting account, without "@"
@@ -62,19 +66,16 @@ async function checkReferences(parsed, account) {
       );
     }
 
-    if (!handle || kind === "retweet") return;
+    // quotes are published as a link in the text, which X always accepts
+    if (!handle || kind !== "reply") return;
 
     const author = post.username.toLowerCase();
     const mentioned = post.mentions.some((m) => m.toLowerCase() === handle);
     if (author === handle || mentioned) return;
 
-    const verb = kind === "reply" ? "reply to" : "quote";
-    errors.push(
-      `X only allows @${account} to ${verb} posts that were written by @${account} or that mention @${account}. ` +
-        `${ref} was written by @${post.username} and does not mention @${account}. ` +
-        (kind === "quote"
-          ? "Remove the text to make this a plain retweet, or write a standalone tweet that links to the post instead."
-          : "Write a standalone tweet that links to the post instead.")
+    warnings.push(
+      `X may refuse to let @${account} reply to ${ref} because it was written by @${post.username} and does not mention @${account}. ` +
+        "If publishing fails, write a standalone tweet that links to the post instead."
     );
   }
 }
@@ -206,12 +207,13 @@ async function lookupTweet(id, { timeout = 10000 } = {}) {
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 module.exports = parseTweetFileContent;
+module.exports.quoteText = quoteText;
 
 const EOL = (__nccwpck_require__(2037).EOL);
 
 const { existsSync } = __nccwpck_require__(7147);
 const { join } = __nccwpck_require__(1017);
-const { parseTweet } = __nccwpck_require__(6223);
+const { parseTweet, extractUrls } = __nccwpck_require__(6223);
 const { load } = __nccwpck_require__(1917);
 const { parseTweetRef } = __nccwpck_require__(8045);
 
@@ -273,8 +275,11 @@ function parseTweetFileContent(text, dir, isThread = false) {
   // Validate options
   validateOptions(options, text, dir);
 
-  // Parse tweet if has text
-  const parsed = text ? parseTweet(text) : { valid: true, weightedLength: 0 };
+  // A quote is published with the post link appended to the text, see
+  // quoteText in tweet.js, so the link counts towards the length
+  const parsed = text
+    ? parseTweet(options.retweet ? quoteText(text, options.retweet) : text)
+    : { valid: true, weightedLength: 0 };
   if (!parsed.valid)
     throw new Error(
       `Tweet exceeds maximum length of 280 characters by ${
@@ -313,6 +318,13 @@ function validateOptions(options, text, dir) {
 
   if (options.retweet && !text && options.media && options.media.length)
     throw new Error("Cannot attach media to a retweet");
+
+  // X shows the last post link in the text as the quote, another link could
+  // take its place
+  if (options.retweet && text && extractUrls(text).length)
+    throw new Error(
+      "A quote tweet cannot contain other links. The quoted post link is added to the end of the text when it is published."
+    );
 
   if (options.poll && options.poll.length > 4)
     throw new Error(
@@ -396,6 +408,13 @@ function withLastLineRemoved(text) {
     .trim();
 }
 
+// X refuses quote tweets of posts that don't mention the account
+// (quote_tweet_id), but turns a post link at the end of the text into a quote
+// by itself, which it allows for any public post
+function quoteText(text, retweet) {
+  return `${text}\n\n${retweet}`;
+}
+
 
 /***/ }),
 
@@ -457,6 +476,7 @@ const mime = __nccwpck_require__(3583);
 
 const parseTweetId = __nccwpck_require__(8045);
 const { parseTweetRef, canonicalTweetUrl } = __nccwpck_require__(8045);
+const { quoteText } = __nccwpck_require__(5935);
 
 async function tweet({ twitterCredentials }, tweetData, tweetFile) {
   const client = new TwitterApi(twitterCredentials);
@@ -474,7 +494,8 @@ async function handleTweet(client, self, tweet, name) {
   }
 
   const tweetData = {
-    text: tweet.text,
+    // a quote is the text with the post link appended, not quote_tweet_id
+    text: tweet.retweet ? quoteText(tweet.text, tweet.retweet) : tweet.text,
   };
 
   if (tweet.poll) {
@@ -491,11 +512,6 @@ async function handleTweet(client, self, tweet, name) {
         in_reply_to_tweet_id: tweetId,
       };
     }
-  }
-
-  if (tweet.retweet) {
-    const tweetId = parseTweetId(tweet.retweet);
-    if (tweetId) tweetData.quote_tweet_id = tweetId;
   }
 
   if (tweet.media?.length) {

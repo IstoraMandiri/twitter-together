@@ -69,7 +69,8 @@ nock("https://cdn.syndication.twimg.com")
     id_str: ID,
     text: "hello world",
     user: { screen_name: "m2rg" },
-    entities: { user_mentions: [] },
+    // mentions someone, but not the posting account
+    entities: { user_mentions: [{ screen_name: "gr2m" }] },
   });
 
 // create check run
@@ -78,20 +79,16 @@ nock("https://api.github.com")
     tap.equal(body.name, "preview");
     tap.equal(body.head_sha, "0000000000000000000000000000000000000002");
     tap.equal(body.status, "completed");
-    tap.equal(body.conclusion, "failure");
+    tap.equal(body.conclusion, "success");
     tap.same(body.output, {
       title: "1 tweet(s)",
-      summary: `### ❌ Invalid Tweet
+      summary: `### ✅ Valid Tweet
 
-\`\`\`tweet
----
-reply: https://twitter.com/m2rg/status/0000000000000000001?s=20
----
+Replying to https://x.com/m2rg/status/0000000000000000001
 
-Smart thinking!
-\`\`\`
+> Smart thinking!
 
-**X only allows @eth_classic to reply to posts that were written by @eth_classic or that mention @eth_classic. https://x.com/m2rg/status/0000000000000000001 was written by @m2rg and does not mention @eth_classic. Write a standalone tweet that links to the post instead.**`,
+> ⚠️ X may refuse to let @eth_classic reply to https://x.com/m2rg/status/0000000000000000001 because it was written by @m2rg and does not mention @eth_classic. If publishing fails, write a standalone tweet that links to the post instead.`,
     });
 
     return true;

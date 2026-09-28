@@ -78,20 +78,14 @@ nock("https://api.github.com")
     tap.equal(body.name, "preview");
     tap.equal(body.head_sha, "0000000000000000000000000000000000000002");
     tap.equal(body.status, "completed");
-    tap.equal(body.conclusion, "failure");
+    tap.equal(body.conclusion, "success");
     tap.same(body.output, {
       title: "1 tweet(s)",
-      summary: `### ❌ Invalid Tweet
+      summary: `### ✅ Valid Tweet
 
-\`\`\`tweet
----
-retweet: https://x.com/m2rg/status/0000000000000000001
----
+Quoting https://x.com/m2rg/status/0000000000000000001
 
-Smart thinking!
-\`\`\`
-
-**X only allows @eth_classic to quote posts that were written by @eth_classic or that mention @eth_classic. https://x.com/m2rg/status/0000000000000000001 was written by @m2rg and does not mention @eth_classic. Remove the text to make this a plain retweet, or write a standalone tweet that links to the post instead.**`,
+> Smart thinking!`,
     });
 
     return true;

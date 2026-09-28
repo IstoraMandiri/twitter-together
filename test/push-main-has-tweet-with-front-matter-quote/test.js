@@ -69,8 +69,12 @@ nock("https://api.twitter.com")
   })
 
   .post("/2/tweets", (body) => {
-    tap.equal(body.text, "Smart thinking!");
-    tap.equal(body.quote_tweet_id, "0000000000000000001");
+    // quoted by appending the link, not with quote_tweet_id
+    tap.equal(
+      body.text,
+      "Smart thinking!\n\nhttps://x.com/m2rg/status/0000000000000000001"
+    );
+    tap.equal(body.quote_tweet_id, undefined);
     return true;
   })
   .reply(201, {

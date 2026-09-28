@@ -219,18 +219,23 @@ retweet: https://x.com/gr2m/status/1409601188362809349
 twitter-together is awesome!
 ```
 
+A quote is published with the post link appended to the end of the text, which X displays as a quote. The link
+counts as 23 characters towards the 280 character limit, and the text of a quote cannot contain any other links.
+
 Post links are parsed leniently: `x.com`, `twitter.com` and `mobile.twitter.com` links are accepted, with or without
 tracking parameters (`?s=20`) or fragments (`#m`). A bare post id also works, but must be quoted (`retweet: "1409601188362809349"`)
 so YAML does not turn it into a number.
 
-> **X restricts replies and quotes.** The X API only allows an account to reply to or quote posts that it wrote
-> itself, or that mention it. Attempting anything else fails with
+> **X restricts replies.** The X API may refuse to let an account reply to (or quote, using `quote_tweet_id`) posts
+> that it did not write and that don't mention it, failing with
 > `You can only reply to or quote posts where you are mentioned or are the author.`
-> Plain reposts (a `retweet` with no body) are not affected.
+> Quotes are not affected because they are published as a link in the text, and neither are plain reposts
+> (a `retweet` with no body).
 >
 > Set the `TWITTER_ACCOUNT` environment variable (the handle of the posting account, without `@`) on the
-> `pull_request` / `pull_request_target` job to have the preview verify that referenced posts exist and satisfy
-> this rule before the pull request is merged. This uses X's public syndication endpoint and does not need API credentials.
+> `pull_request` / `pull_request_target` job to have the preview verify that referenced posts exist, and warn about
+> replies that X may refuse. Whether X enforces the rule can't be known in advance, so the warning does not fail the
+> preview. This uses X's public syndication endpoint and does not need API credentials.
 
 ### Scheduled tweets
 
