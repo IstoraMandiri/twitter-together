@@ -1,0 +1,10 @@
+{
+  "schedule": "*/15 * * * *",
+  "repository": {
+    "owner": {
+      "login": "twitter-together"
+    },
+    "name": "action",
+    "default_branch": "main"
+  }
+}

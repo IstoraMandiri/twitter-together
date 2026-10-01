@@ -1,0 +1,11 @@
+{
+  "action": "publish-scheduled-tweets",
+  "client_payload": {},
+  "repository": {
+    "owner": {
+      "login": "twitter-together"
+    },
+    "name": "action",
+    "default_branch": "main"
+  }
+}

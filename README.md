@@ -36,41 +36,82 @@ You can submit a tweet to this repository to see the magic happen. Please follow
 
 ## Twitter API compatibility
 
-The Twitter Ads API we currently use is the `v8` version.
+Twitter, Together uses the v2 Twitter API for most functionality.
+It makes use of the v1 API for media uploads, as there is no v2 equivalent endpoint.
+
+Essentials level Twitter access should grant access to all endpoints Twitter, Together uses.
 
 ## Setup
 
-1. [Create a twitter app](docs/01-create-twitter-app.md) with your shared twitter account and store the credentials as `TWITTER_API_KEY`, `TWITTER_API_SECRET_KEY`, `TWITTER_ACCESS_TOKEN` and `TWITTER_ACCESS_TOKEN_SECRET` in your repository’s secrets settings.
+Unless you wish to contribute to this project, you don't need to fork this repository.
+Instead, you can make use of this GitHub Action from the comfort of your own repository (either a new one, or one you already have) by creating a GitHub Actions workflow following these steps:
+
+1. [Create a Twitter app](docs/01-create-twitter-app.md) with your shared Twitter account and store the credentials as `TWITTER_API_KEY`, `TWITTER_API_SECRET_KEY`, `TWITTER_ACCESS_TOKEN` and `TWITTER_ACCESS_TOKEN_SECRET` in your repository’s secrets settings.
 2. [Create a `.github/workflows/twitter-together.yml` file](docs/02-create-twitter-together-workflow.md) with the content below. Make sure to replace `'main'` if you changed your repository's default branch.
 
-   ```yml
-   on: [push, pull_request]
-   name: Twitter, together!
-   jobs:
-     preview:
-       name: Preview
-       runs-on: ubuntu-latest
-       if: github.event_name == 'pull_request'
-       steps:
-         - uses: twitter-together/action@v2
-           env:
-             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-     tweet:
-       name: Tweet
-       runs-on: ubuntu-latest
-       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-       steps:
-         - name: checkout main
-           uses: actions/checkout@v3
-         - name: Tweet
-           uses: twitter-together/action@v2
-           env:
-             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-             TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
-             TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
-             TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
-             TWITTER_API_SECRET_KEY: ${{ secrets.TWITTER_API_SECRET_KEY }}
-   ```
+```yml
+on: [push, pull_request]
+name: Twitter, together!
+jobs:
+  preview:
+    name: Preview
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: checkout pull request
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Validate Tweets
+        uses: twitter-together/action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  tweet:
+    name: Tweet
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: checkout main
+        uses: actions/checkout@v3
+      - name: Tweet
+        uses: twitter-together/action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
+          TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
+          TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
+          TWITTER_API_SECRET_KEY: ${{ secrets.TWITTER_API_SECRET_KEY }}
+```
+
+TODO: CONFIRM
+
+If you wish to have this action create preview comments in the PR thread, you can use the following config.
+
+Note that `pull_request_target` events have elevated permissions, so if you are using this config, you should configure your repository to only trigger actions that are trusted. You can do this in [various](https://securitylab.github.com/research/github-actions-preventing-pwn-requests/) ways, including preventing outside contributors from triggering actions automatically, and requiring only allowing actions from Verified Creators in your repository Settings -> Actions -> General.
+
+You can also securely enable PR comments only for local branch commits, using the `pull_request` events with an `ENABLE_COMMENTS: 1` env variable, but comments will not be created for PRs from forks.
+
+```yml
+# enable comments, but beware of security implications
+on: [push, pull_request_target]
+name: Twitter, together!
+jobs:
+  preview:
+    name: Preview
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request_target'
+    permissions:
+      pull-requests: write
+    steps:
+      - name: checkout pull request
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Validate Tweets
+        uses: twitter-together/action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
 
 3. After creating or updating `.github/workflows/twitter-together.yml` in your repository’s default branch, a pull request will be created with further instructions.
 
@@ -157,31 +198,113 @@ poll:
 What is your favorite color?
 ```
 
-To reply to another tweet, include the `reply` frontmatter item with the tweet link that you wish to reply to:
+To reply to another post, include the `reply` frontmatter item with the post link that you wish to reply to:
 
 ```tweet
 ---
-reply: https://twitter.com/gr2m/status/1409601188362809349
+reply: https://x.com/gr2m/status/1409601188362809349
 ---
 
 @gr2m I love your work!
 ```
 
-If you want to quote-retweet another tweet, include the `retweet` frontmatter item with the tweet link that you wish to quote-retweet.
-If you'd prefer to just retweet without quoting, don't provide a tweet body after the frontmatter.
+If you want to quote another post, include the `retweet` frontmatter item with the post link that you wish to quote.
+If you'd prefer to just repost without quoting, don't provide a tweet body after the frontmatter.
 
 ```tweet
 ---
-retweet: https://twitter.com/gr2m/status/1409601188362809349
+retweet: https://x.com/gr2m/status/1409601188362809349
 ---
 
 twitter-together is awesome!
 ```
 
+A quote is published with the post link appended to the end of the text, which X displays as a quote. The link
+counts as 23 characters towards the 280 character limit, and the text of a quote cannot contain any other links.
+
+Post links are parsed leniently: `x.com`, `twitter.com` and `mobile.twitter.com` links are accepted, with or without
+tracking parameters (`?s=20`) or fragments (`#m`). A bare post id also works, but must be quoted (`retweet: "1409601188362809349"`)
+so YAML does not turn it into a number.
+
+> **X restricts replies.** The X API may refuse to let an account reply to (or quote, using `quote_tweet_id`) posts
+> that it did not write and that don't mention it, failing with
+> `You can only reply to or quote posts where you are mentioned or are the author.`
+> Quotes are not affected because they are published as a link in the text, and neither are plain reposts
+> (a `retweet` with no body).
+>
+> Set the `TWITTER_ACCOUNT` environment variable (the handle of the posting account, without `@`) on the
+> `pull_request` / `pull_request_target` job to have the preview verify that referenced posts exist, and warn about
+> replies that X may refuse. Whether X enforces the rule can't be known in advance, so the warning does not fail the
+> preview. This uses X's public syndication endpoint and does not need API credentials.
+
+### Scheduled tweets
+
+A tweet with a `schedule` front matter item is **not** published when its pull request is merged.
+Instead it is published by a separate workflow once the scheduled time has passed.
+
+```tweet
+---
+schedule: 2030-01-02T03:04:00Z
+---
+
+Future news!
+```
+
+Add a second workflow to the repository to publish them:
+
+```yml
+name: Publish scheduled tweets
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write # the queue branch
+  checks: write # publication records
+concurrency:
+  group: publish-scheduled-tweets
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # records attach to the commit that added each tweet
+      - uses: twitter-together/action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
+          TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
+          TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
+          TWITTER_API_SECRET_KEY: ${{ secrets.TWITTER_API_SECRET_KEY }}
+```
+
+This needs no credentials beyond the ones the repository already has. Timing is limited by the cron
+interval, and GitHub often delays scheduled runs, so treat the scheduled time as "not before" rather
+than exact. `workflow_dispatch` lets a maintainer publish due tweets without waiting for the next run.
+
+Two things keep track of scheduled tweets:
+
+- **Publication records** are check runs on the commit that added the tweet file, named
+  `scheduled tweet: <file>`. A record is created before the tweet is sent and completed with the
+  result. Check runs can only be created or changed by a GitHub App (the workflow token counts as
+  one) and can never be deleted, so nobody with write access can forge a "published" record to
+  suppress a tweet, or remove one to have it sent again. This is what decides whether a tweet may be
+  published. It needs `checks: write` and a full-history checkout (`fetch-depth: 0`) so the action
+  can find each file's adding commit.
+- **The queue** is `.github/published-tweets.json` on a `published-tweets` branch, created
+  automatically. It is an index of what is waiting, for whoever triggers this workflow to read; it
+  is not trusted to decide anything. A tweet the queue does not know about is queued when the
+  workflow next runs, unless its time passed more than 7 days ago, in which case it is marked
+  `expired` and left for a human.
+
+To retry a tweet X rejected, push a change to its file: it is retried once the file is newer than the
+failed record. The queue path and branch can be changed with `SCHEDULE_LEDGER_PATH` and
+`SCHEDULE_LEDGER_BRANCH`.
+
 To include media items with your tweet, include the `media` frontmatter item as an array with each item having a `file` property and an optional `alt` property.
 The `file` property should be the name of a file within the `media` directory of your repository (same level as the `tweets` directory).
-
-_(Note: Although alt text can be set in frontmatter, it is not yet actually passed to Twitter due to library limitations)._
 
 ```tweet
 ---
@@ -194,6 +317,38 @@ media:
 
 Here are some cute animals!
 ```
+
+A tweet can have up to 4 images (`.png`, `.jpg`, `.jpeg`, `.webp`), or a single video (`.mp4`, `.m4v`) or GIF, but not
+both. X's size limits apply: 5MB per image, 15MB for a GIF and 512MB for a video.
+
+#### Media from URLs
+
+Instead of a `file`, a media item can have a `url`, so large files such as videos don't have to be committed to the
+repository. The media is downloaded when the tweet is published, and the pull request preview checks that it exists,
+has the right type and fits X's limits (videos are shown as a link in the preview).
+
+```tweet
+---
+media:
+  - url: https://abc123.public.blob.vercel-storage.com/uploads/launch.mp4
+    alt: The launch
+---
+
+Watch the launch!
+```
+
+Media URLs are only accepted from hosts listed in the `MEDIA_URL_HOSTS` environment variable, a comma-separated list
+of exact hosts or `*.example.com` wildcards (subdomains only). Set it to `*` to allow any host. Without it, URL media
+is rejected. Set it for both the `push` and the `pull_request` / `pull_request_target` jobs, e.g. at the workflow level:
+
+```yml
+env:
+  MEDIA_URL_HOSTS: "*.public.blob.vercel-storage.com"
+```
+
+Media URLs must use `https`, and the type is taken from the extension of the URL's path. Because URLs may point
+anywhere, requests refuse to connect to private, loopback, link-local and unique-local addresses (IPv4 and IPv6,
+checked on every redirect, at most 3), and downloads stop as soon as they exceed X's limit.
 
 To thread a chain of tweets, use `---` to delimit each tweet in the file. You can optionally set `threadDelimiter` in the frontmatter to change the delimiter for the next tweet in the thread. Each tweet in a thread supports its own frontmatter.
 
