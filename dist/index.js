@@ -1,6 +1,47 @@
 /******/ (() => { // webpackBootstrap
 /******/ 	var __webpack_modules__ = ({
 
+/***/ 6755:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+module.exports = checkMedia;
+
+const { headMedia, MediaError } = __nccwpck_require__(3862);
+
+/**
+ * Verify that media loaded from URLs exists and fits X's limits, for every
+ * tweet of a thread. Media that is missing, of the wrong type or too big is
+ * an error; media that could not be checked is a warning, as it is checked
+ * again when the tweet is published.
+ *
+ * @param {object} parsed result of parseTweetFileContent
+ * @returns {Promise<{ errors: string[], warnings: string[] }>}
+ */
+async function checkMedia(parsed) {
+  const errors = [];
+  const warnings = [];
+
+  for (let tweet = parsed; tweet; tweet = tweet.thread) {
+    for (const { url, kind } of tweet.media || []) {
+      if (!url) continue;
+      try {
+        await headMedia(url, kind);
+      } catch (error) {
+        if (error instanceof MediaError) errors.push(error.message);
+        else
+          warnings.push(
+            `Could not verify ${url} (${error.message}). It will be checked again when the tweet is published.`
+          );
+      }
+    }
+  }
+
+  return { errors, warnings };
+}
+
+
+/***/ }),
+
 /***/ 4770:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -79,6 +120,251 @@ async function checkReferences(parsed, account) {
     );
   }
 }
+
+
+/***/ }),
+
+/***/ 3862:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const dns = __nccwpck_require__(9523);
+const fs = __nccwpck_require__(7147);
+const https = __nccwpck_require__(5687);
+const net = __nccwpck_require__(1808);
+const os = __nccwpck_require__(2037);
+const path = __nccwpck_require__(1017);
+
+const { MEDIA_LIMITS, contentTypeMatches } = __nccwpck_require__(725);
+
+const MAX_REDIRECTS = 3;
+// adjustable for tests
+const settings = { timeout: 30000 };
+const MB = 1024 * 1024;
+
+/**
+ * A problem with the media itself (missing, wrong type, too big), as opposed
+ * to a network failure, which may go away on its own.
+ */
+class MediaError extends Error {}
+
+/**
+ * Whether an IP address is private, loopback, link-local, unique-local or
+ * otherwise not on the public internet. Media URLs may point anywhere when
+ * MEDIA_URL_HOSTS is "*", so requests must never reach internal services.
+ */
+function isPrivateAddress(address) {
+  const version = net.isIP(address);
+  if (version === 4) return isPrivateV4(address);
+  if (version !== 6) return true;
+
+  const ip = address.toLowerCase();
+  // IPv4-mapped (::ffff:10.0.0.1) and NAT64 (64:ff9b::10.0.0.1) addresses
+  const mapped = ip.match(/^(?:::ffff:|64:ff9b::)(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped) return isPrivateV4(mapped[1]);
+  if (ip === "::" || ip === "::1") return true;
+  const first = parseInt(ip.split(":")[0] || "0", 16);
+  return (
+    (first & 0xfe00) === 0xfc00 || // fc00::/7 unique local
+    (first & 0xffc0) === 0xfe80 || // fe80::/10 link local
+    (first & 0xff00) === 0xff00 || // ff00::/8 multicast
+    ip.startsWith("::ffff:") // mapped addresses in hex form
+  );
+}
+
+function isPrivateV4(address) {
+  const [a, b] = address.split(".").map(Number);
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) || // carrier-grade NAT
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 192 && b === 0) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    a >= 224 // multicast and reserved
+  );
+}
+
+/**
+ * A `lookup` for https.request that refuses hosts resolving to private
+ * addresses. Checking the address that is actually connected to (rather
+ * than resolving separately up front) means DNS can't change in between.
+ */
+function createSafeLookup(lookup = dns.lookup) {
+  return function safeLookup(hostname, options, callback) {
+    if (typeof options === "function") {
+      callback = options;
+      options = {};
+    }
+    lookup(hostname, { ...options, all: true }, (error, addresses) => {
+      if (error) return callback(error);
+      const blocked = addresses.find(({ address }) =>
+        isPrivateAddress(address)
+      );
+      if (blocked)
+        return callback(
+          new MediaError(
+            `Refusing to load media from ${hostname}: it resolves to the private address ${blocked.address}`
+          )
+        );
+      if (options.all) return callback(null, addresses);
+      callback(null, addresses[0].address, addresses[0].family);
+    });
+  };
+}
+
+const safeLookup = createSafeLookup();
+
+function checkUrl(value) {
+  const url = new URL(value);
+  if (url.protocol !== "https:")
+    throw new MediaError(`Media URLs must use https: ${value}`);
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  // IP literals are connected to without a lookup
+  if (net.isIP(host) && isPrivateAddress(host))
+    throw new MediaError(
+      `Refusing to load media from the private address ${host}`
+    );
+  return url;
+}
+
+/**
+ * Make a request, following up to MAX_REDIRECTS redirects and checking every
+ * hop. Resolves with the response of the final hop.
+ */
+function request(value, method, redirects = 0) {
+  return new Promise((resolve, reject) => {
+    const url = checkUrl(value);
+    const req = https.request(
+      url,
+      {
+        method,
+        lookup: safeLookup,
+        headers: { "user-agent": "twitter-together" },
+        timeout: settings.timeout,
+      },
+      (res) => {
+        const { statusCode, headers } = res;
+        if (statusCode >= 300 && statusCode < 400 && headers.location) {
+          res.resume();
+          if (redirects >= MAX_REDIRECTS)
+            return reject(
+              new MediaError(`Too many redirects loading ${value}`)
+            );
+          const next = new URL(headers.location, url).href;
+          return request(next, method, redirects + 1).then(resolve, reject);
+        }
+        resolve(res);
+      }
+    );
+    req.on("timeout", () =>
+      req.destroy(new Error(`Timed out loading ${value}`))
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function checkResponse(res, url, kind) {
+  if (res.statusCode === 404 || res.statusCode === 410)
+    throw new MediaError(`Media ${url} does not exist`);
+  if (res.statusCode < 200 || res.statusCode >= 300)
+    throw new Error(
+      `Loading media ${url} failed with status ${res.statusCode}`
+    );
+
+  const contentType = res.headers["content-type"] || "";
+  if (!contentTypeMatches(contentType, kind))
+    throw new MediaError(
+      `Media ${url} has content type "${contentType}", which is not a supported ${kind}`
+    );
+
+  const length = res.headers["content-length"];
+  const size = length === undefined ? null : Number(length);
+  const limit = MEDIA_LIMITS[kind];
+  if (size !== null && size > limit)
+    throw new MediaError(tooBig(url, kind, size));
+  return { contentType, size };
+}
+
+function tooBig(url, kind, size) {
+  const limit = MEDIA_LIMITS[kind];
+  const found = size ? ` (${(size / MB).toFixed(1)}MB)` : "";
+  return `Media ${url} is too big${found}, X allows up to ${
+    limit / MB
+  }MB for a ${kind}`;
+}
+
+/**
+ * Check that media exists and fits X's limits without downloading it.
+ * Throws a MediaError if the media is unusable, any other error if it could
+ * not be checked.
+ */
+async function headMedia(url, kind) {
+  let res = await request(url, "HEAD");
+  res.resume();
+  // some servers don't implement HEAD, look at the headers of a GET instead
+  if (res.statusCode === 405 || res.statusCode === 501) {
+    res = await request(url, "GET");
+    res.destroy();
+  }
+  return checkResponse(res, url, kind);
+}
+
+/**
+ * Download media to a temporary file, aborting once it exceeds X's limit
+ * for its kind. Call `cleanup()` once done with the file.
+ */
+async function downloadMedia(url, kind) {
+  const res = await request(url, "GET");
+  try {
+    checkResponse(res, url, kind);
+  } catch (error) {
+    res.destroy();
+    throw error;
+  }
+
+  const dir = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), "twitter-together-")
+  );
+  const cleanup = () => fs.promises.rm(dir, { recursive: true, force: true });
+  const file = path.join(dir, path.basename(new URL(url).pathname));
+  const limit = MEDIA_LIMITS[kind];
+
+  try {
+    const size = await new Promise((resolve, reject) => {
+      let received = 0;
+      const out = fs.createWriteStream(file);
+      res.on("data", (chunk) => {
+        received += chunk.length;
+        if (received > limit) {
+          res.destroy();
+          out.destroy();
+          reject(new MediaError(tooBig(url, kind, received)));
+        }
+      });
+      res.on("error", reject);
+      out.on("error", reject);
+      out.on("finish", () => resolve(received));
+      res.pipe(out);
+    });
+    return { file, size, cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+module.exports = {
+  headMedia,
+  downloadMedia,
+  createSafeLookup,
+  isPrivateAddress,
+  MediaError,
+  settings,
+};
 
 
 /***/ }),
@@ -203,6 +489,139 @@ async function lookupTweet(id, { timeout = 10000 } = {}) {
 
 /***/ }),
 
+/***/ 725:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const { extname } = __nccwpck_require__(1017);
+
+const MB = 1024 * 1024;
+
+// X's upload limits per media kind
+const MEDIA_LIMITS = {
+  image: 5 * MB,
+  gif: 15 * MB,
+  video: 512 * MB,
+};
+
+const EXTENSIONS = {
+  ".png": "image",
+  ".jpg": "image",
+  ".jpeg": "image",
+  ".webp": "image",
+  ".gif": "gif",
+  ".mp4": "video",
+  ".m4v": "video",
+};
+
+const MEDIA_MIME_TYPES = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".mp4": "video/mp4",
+  ".m4v": "video/mp4",
+};
+
+/**
+ * The kind of media ("image", "gif" or "video") from a file name or URL
+ * path, or `null` if the extension is not supported.
+ */
+function mediaKind(name) {
+  return EXTENSIONS[extname(name).toLowerCase()] || null;
+}
+
+/**
+ * `MEDIA_URL_HOSTS` is a comma-separated list of exact hosts,
+ * `*.example.com` wildcards (subdomains only), or `*` for any host.
+ */
+function isAllowedHost(host, allowed = process.env.MEDIA_URL_HOSTS) {
+  const hostname = String(host).toLowerCase();
+  return String(allowed || "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean)
+    .some((entry) => {
+      if (entry === "*") return true;
+      if (entry.startsWith("*.")) return hostname.endsWith(entry.slice(1));
+      return hostname === entry;
+    });
+}
+
+/**
+ * Validate a media URL from a tweet file. Returns `{ url, kind, mimeType }`.
+ */
+function checkMediaUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch (error) {
+    throw new Error(`Invalid media URL: ${value}`);
+  }
+  if (url.protocol !== "https:")
+    throw new Error(`Media URLs must use https: ${value}`);
+
+  if (!process.env.MEDIA_URL_HOSTS)
+    throw new Error(
+      `Media URLs are not enabled. Set the MEDIA_URL_HOSTS environment variable to the hosts media may be loaded from (or "*" for any host): ${value}`
+    );
+  if (!isAllowedHost(url.hostname))
+    throw new Error(
+      `Media host ${url.hostname} is not allowed. Allowed hosts are set with the MEDIA_URL_HOSTS environment variable: ${value}`
+    );
+
+  const ext = extname(url.pathname).toLowerCase();
+  if (ext === ".mov")
+    throw new Error(`Only MP4 videos are supported, convert ${value} to .mp4`);
+  const kind = mediaKind(url.pathname);
+  if (!kind)
+    throw new Error(
+      `Unsupported media type for ${value}. Use a link ending in .png, .jpg, .jpeg, .webp, .gif, .mp4 or .m4v`
+    );
+  return { url: url.href, kind, mimeType: MEDIA_MIME_TYPES[ext] };
+}
+
+/**
+ * X allows up to 4 images, or a single video or GIF, per tweet.
+ */
+function validateMediaSet(media) {
+  const single = media.filter((item) => item.kind !== "image");
+  if (single.length && media.length > 1)
+    throw new Error(
+      "A tweet can have up to 4 images, or a single video or GIF, but not both"
+    );
+  if (media.length > 4)
+    throw new Error(
+      `A tweet can have up to 4 images, found ${media.length} images`
+    );
+}
+
+/**
+ * Whether a response content type is acceptable for the media kind.
+ */
+function contentTypeMatches(contentType, kind) {
+  const type = String(contentType || "")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+  if (kind === "video") return type === "video/mp4";
+  if (kind === "gif") return type === "image/gif";
+  return ["image/png", "image/jpeg", "image/webp"].includes(type);
+}
+
+module.exports = {
+  mediaKind,
+  isAllowedHost,
+  checkMediaUrl,
+  validateMediaSet,
+  contentTypeMatches,
+  MEDIA_LIMITS,
+  MEDIA_MIME_TYPES,
+};
+
+
+/***/ }),
+
 /***/ 5935:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -216,6 +635,7 @@ const { join } = __nccwpck_require__(1017);
 const { parseTweet, extractUrls } = __nccwpck_require__(6223);
 const { load } = __nccwpck_require__(1917);
 const { parseTweetRef } = __nccwpck_require__(8045);
+const { checkMediaUrl, mediaKind, validateMediaSet } = __nccwpck_require__(725);
 
 const OPTION_REGEX = /^\(\s?\)\s+/;
 const FRONT_MATTER_REGEX = new RegExp(
@@ -338,17 +758,25 @@ function validateOptions(options, text, dir) {
 
   if (options.media) {
     for (const media of options.media) {
-      if (media.file.indexOf(join(dir, "media")) !== 0)
-        throw new Error(`Media file should be within the media directory`);
+      if (media.url) {
+        Object.assign(media, checkMediaUrl(media.url));
+      } else {
+        if (media.file.indexOf(join(dir, "media")) !== 0)
+          throw new Error(`Media file should be within the media directory`);
 
-      if (!existsSync(media.file))
-        throw new Error(`Media file ${media.file} does not exist`);
+        if (!existsSync(media.file))
+          throw new Error(`Media file ${media.file} does not exist`);
+
+        // unknown extensions are uploaded as images, as before
+        media.kind = mediaKind(media.file) || "image";
+      }
 
       if (media.alt && media.alt.length > 1000)
         throw new Error(
           `Media alt text must be 1000 characters or less, found length ${media.alt.length}`
         );
     }
+    validateMediaSet(options.media);
   }
 }
 
@@ -370,11 +798,17 @@ function getOptionsFromFrontMatter(frontMatter, options, dir) {
 
   if (Array.isArray(parsedFrontMatter.media))
     options.media = parsedFrontMatter.media.reduce((arr, item) => {
-      if (item && typeof item === "object" && typeof item.file === "string")
-        arr.push({
-          file: join(dir, "media", item.file),
-          alt: typeof item.alt !== "string" ? null : item.alt,
-        });
+      if (!item || typeof item !== "object") return arr;
+      const hasFile = typeof item.file === "string";
+      const hasUrl = typeof item.url === "string";
+      if (hasFile === hasUrl)
+        throw new Error("Each media item needs either a `file` or a `url`");
+      const alt = typeof item.alt !== "string" ? null : item.alt;
+      arr.push(
+        hasFile
+          ? { file: join(dir, "media", item.file), alt }
+          : { url: item.url, alt }
+      );
       return arr;
     }, []);
 
@@ -477,6 +911,7 @@ const mime = __nccwpck_require__(3583);
 const parseTweetId = __nccwpck_require__(8045);
 const { parseTweetRef, canonicalTweetUrl } = __nccwpck_require__(8045);
 const { quoteText } = __nccwpck_require__(5935);
+const { downloadMedia } = __nccwpck_require__(3862);
 
 async function tweet({ twitterCredentials }, tweetData, tweetFile) {
   const client = new TwitterApi(twitterCredentials);
@@ -536,13 +971,24 @@ async function handleTweet(client, self, tweet, name) {
   return tweetResult;
 }
 
-async function createMedia(client, { file, alt }) {
-  const mediaId = await client.v1.uploadMedia(file, {
-    mimeType: mime.lookup(file),
-  });
-  if (alt)
-    await client.v1.createMediaMetadata(mediaId, { alt_text: { text: alt } });
-  return mediaId;
+async function createMedia(client, { file, url, kind, mimeType, alt }) {
+  // media loaded from a URL is downloaded first, and removed again after
+  const download = url ? await downloadMedia(url, kind) : null;
+  try {
+    const path = download ? download.file : file;
+    // NOTE: this uses X's legacy v1.1 media upload, chunked, which for
+    // videos waits until X has processed them (STATUS polling)
+    const mediaId = await client.v1.uploadMedia(path, {
+      mimeType: mimeType || mime.lookup(path),
+      target: "tweet",
+      longVideo: false,
+    });
+    if (alt)
+      await client.v1.createMediaMetadata(mediaId, { alt_text: { text: alt } });
+    return mediaId;
+  } finally {
+    if (download) await download.cleanup();
+  }
 }
 
 async function createTweet(client, self, options) {
@@ -682,6 +1128,7 @@ const { autoLink } = __nccwpck_require__(6223);
 
 const parseTweetFileContent = __nccwpck_require__(5935);
 const checkReferences = __nccwpck_require__(4770);
+const checkMedia = __nccwpck_require__(6755);
 const getNewTweets = __nccwpck_require__(9305);
 
 async function generateSummary(state, plainText = false) {
@@ -690,24 +1137,24 @@ async function generateSummary(state, plainText = false) {
   const newTweets = await getNewTweets(state);
 
   // when the posting account is known, verify referenced posts exist and
-  // that X will let the account reply to / quote them
+  // that X will let the account reply to them; media URLs are always checked
   const account = (process.env.TWITTER_ACCOUNT || "").replace(/^@/, "");
 
   const parsedTweets = [];
   for (const tweet of newTweets) {
     try {
       const parsed = parseTweetFileContent(tweet, dir);
-      if (account) {
-        const { errors, warnings } = await checkReferences(parsed, account);
-        parsed.warnings = warnings;
-        if (errors.length) {
-          parsedTweets.push({
-            error: errors.join("\n\n"),
-            valid: false,
-            text: tweet,
-          });
-          continue;
-        }
+      const results = [await checkMedia(parsed)];
+      if (account) results.unshift(await checkReferences(parsed, account));
+      const errors = results.flatMap((result) => result.errors);
+      parsed.warnings = results.flatMap((result) => result.warnings);
+      if (errors.length) {
+        parsedTweets.push({
+          error: errors.join("\n\n"),
+          valid: false,
+          text: tweet,
+        });
+        continue;
       }
       parsedTweets.push(parsed);
     } catch (error) {
@@ -754,7 +1201,13 @@ function summarizeTweet(state, threading = false) {
 
   if (tweet.media.length) {
     const media = tweet.media
-      .map(({ file, alt }) => {
+      .map(({ file, url, kind, alt }) => {
+        if (url) {
+          if (plainText) return `- ${url}${alt ? ` [${alt}]` : ""}`;
+          if (kind === "video")
+            return `🎬 [video](${url})${alt ? `\n${alt}` : ""}`;
+          return `${alt || ""}\n<img src="${url}" height="200" />`;
+        }
         const fileName = file.replace(dir, "");
         if (plainText) {
           return `- ${fileName}${alt && ` [${alt}]`}`;
@@ -32904,6 +33357,14 @@ module.exports = require("child_process");
 
 "use strict";
 module.exports = require("crypto");
+
+/***/ }),
+
+/***/ 9523:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("dns");
 
 /***/ }),
 

@@ -306,8 +306,6 @@ failed record. The queue path and branch can be changed with `SCHEDULE_LEDGER_PA
 To include media items with your tweet, include the `media` frontmatter item as an array with each item having a `file` property and an optional `alt` property.
 The `file` property should be the name of a file within the `media` directory of your repository (same level as the `tweets` directory).
 
-_(Note: Although alt text can be set in frontmatter, it is not yet actually passed to Twitter due to library limitations)._
-
 ```tweet
 ---
 media:
@@ -319,6 +317,38 @@ media:
 
 Here are some cute animals!
 ```
+
+A tweet can have up to 4 images (`.png`, `.jpg`, `.jpeg`, `.webp`), or a single video (`.mp4`, `.m4v`) or GIF, but not
+both. X's size limits apply: 5MB per image, 15MB for a GIF and 512MB for a video.
+
+#### Media from URLs
+
+Instead of a `file`, a media item can have a `url`, so large files such as videos don't have to be committed to the
+repository. The media is downloaded when the tweet is published, and the pull request preview checks that it exists,
+has the right type and fits X's limits (videos are shown as a link in the preview).
+
+```tweet
+---
+media:
+  - url: https://abc123.public.blob.vercel-storage.com/uploads/launch.mp4
+    alt: The launch
+---
+
+Watch the launch!
+```
+
+Media URLs are only accepted from hosts listed in the `MEDIA_URL_HOSTS` environment variable, a comma-separated list
+of exact hosts or `*.example.com` wildcards (subdomains only). Set it to `*` to allow any host. Without it, URL media
+is rejected. Set it for both the `push` and the `pull_request` / `pull_request_target` jobs, e.g. at the workflow level:
+
+```yml
+env:
+  MEDIA_URL_HOSTS: "*.public.blob.vercel-storage.com"
+```
+
+Media URLs must use `https`, and the type is taken from the extension of the URL's path. Because URLs may point
+anywhere, requests refuse to connect to private, loopback, link-local and unique-local addresses (IPv4 and IPv6,
+checked on every redirect, at most 3), and downloads stop as soon as they exceed X's limit.
 
 To thread a chain of tweets, use `---` to delimit each tweet in the file. You can optionally set `threadDelimiter` in the frontmatter to change the delimiter for the next tweet in the thread. Each tweet in a thread supports its own frontmatter.
 
