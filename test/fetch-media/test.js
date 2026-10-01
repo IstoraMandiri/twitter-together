@@ -45,6 +45,9 @@ tap.test("private addresses", async (t) => {
     "::ffff:10.0.0.1",
     "64:ff9b::127.0.0.1",
     "::ffff:a00:1",
+    "::ffff:c0a8:101",
+    "64:ff9b::a9fe:a9fe",
+    "::7f00:1",
     "not an ip",
   ])
     t.equal(isPrivateAddress(ip), true, ip);
@@ -54,6 +57,7 @@ tap.test("private addresses", async (t) => {
     "100.128.0.1",
     "2606:4700::1111",
     "::ffff:8.8.8.8",
+    "64:ff9b::808:808",
   ])
     t.equal(isPrivateAddress(ip), false, ip);
 });
