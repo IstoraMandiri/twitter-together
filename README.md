@@ -168,6 +168,15 @@ If there is no `tweets/` subfolder, the script opens a pull request creating the
 
 For the `pull_request` event, the script handles only `opened` and `synchronize` actions. It looks for new `*.tweet` files in the `tweets/` folder or subfolders. If there are any, the length of each tweet is validated. If one is too long, a failed check run with an explanation is created. If all tweets are valid, a check run with a preview of all tweets is created.
 
+Tweets may be up to 280 characters. X Premium (verified) accounts can post up to 25,000: set the `X_PREMIUM`
+environment variable to `true` for both the `push` and the `pull_request` / `pull_request_target` jobs, e.g. at the
+workflow level:
+
+```yml
+env:
+  X_PREMIUM: true
+```
+
 ### Advanced tweeting
 
 Beyond tweeting out plain-text tweets, twitter-together also supports creating polls, replying to other tweets, retweeting or quote-retweeting other tweets, threading a chain of tweets, and adding images to tweets.
@@ -220,7 +229,7 @@ twitter-together is awesome!
 ```
 
 A quote is published with the post link appended to the end of the text, which X displays as a quote. The link
-counts as 23 characters towards the 280 character limit, and the text of a quote cannot contain any other links.
+counts as 23 characters towards the character limit, and the text of a quote cannot contain any other links.
 
 Post links are parsed leniently: `x.com`, `twitter.com` and `mobile.twitter.com` links are accepted, with or without
 tracking parameters (`?s=20`) or fragments (`#m`). A bare post id also works, but must be quoted (`retweet: "1409601188362809349"`)
