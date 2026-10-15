@@ -634,15 +634,30 @@ module.exports = {
 
 module.exports = parseTweetFileContent;
 module.exports.quoteText = quoteText;
+module.exports.maxTweetLength = maxTweetLength;
 
 const EOL = (__nccwpck_require__(2037).EOL);
 
 const { existsSync } = __nccwpck_require__(7147);
 const { join } = __nccwpck_require__(1017);
-const { parseTweet, extractUrls } = __nccwpck_require__(6223);
+const { parseTweet, extractUrls, configs } = __nccwpck_require__(6223);
 const { load } = __nccwpck_require__(1917);
 const { parseTweetRef } = __nccwpck_require__(8045);
 const { checkMediaUrl, mediaKind, validateMediaSet } = __nccwpck_require__(725);
+
+// X Premium (verified) accounts can post up to 25,000 characters
+const MAX_LENGTH = 280;
+const PREMIUM_MAX_LENGTH = 25000;
+
+/**
+ * The longest post the account may publish: set the `X_PREMIUM`
+ * environment variable to "true" for a Premium (verified) account.
+ */
+function maxTweetLength(premium = process.env.X_PREMIUM) {
+  return /^(true|1|yes)$/i.test(String(premium || "").trim())
+    ? PREMIUM_MAX_LENGTH
+    : MAX_LENGTH;
+}
 
 const OPTION_REGEX = /^\(\s?\)\s+/;
 const FRONT_MATTER_REGEX = new RegExp(
@@ -704,13 +719,17 @@ function parseTweetFileContent(text, dir, isThread = false) {
 
   // A quote is published with the post link appended to the text, see
   // quoteText in tweet.js, so the link counts towards the length
+  const max = maxTweetLength();
   const parsed = text
-    ? parseTweet(options.retweet ? quoteText(text, options.retweet) : text)
+    ? parseTweet(options.retweet ? quoteText(text, options.retweet) : text, {
+        ...configs.defaults,
+        maxWeightedTweetLength: max,
+      })
     : { valid: true, weightedLength: 0 };
   if (!parsed.valid)
     throw new Error(
-      `Tweet exceeds maximum length of 280 characters by ${
-        parsed.weightedLength - 280
+      `Tweet exceeds maximum length of ${max} characters by ${
+        parsed.weightedLength - max
       } characters`
     );
 
