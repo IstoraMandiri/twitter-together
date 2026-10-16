@@ -926,6 +926,75 @@ function parseTweetId(tweetRef) {
 
 /***/ }),
 
+/***/ 5453:
+/***/ ((module) => {
+
+module.exports = commentOnPullRequest;
+
+/**
+ * Comments on the pull request that brought in a commit, e.g. with the URL
+ * of the published tweet. Best effort: the tweet is out either way, so a
+ * missing pull request or a failed request only logs a warning.
+ *
+ * Needs `pull-requests: write` for the workflow's token.
+ *
+ * @returns the pull request number, or undefined
+ */
+async function commentOnPullRequest({ octokit, toolkit, payload }, sha, body) {
+  const owner = payload.repository.owner.login;
+  const repo = payload.repository.name;
+  // see the `request.error` hooks: these errors are thrown, not fatal
+  const request = { bestEffort: true };
+  try {
+    // https://docs.github.com/en/rest/commits/commits#list-pull-requests-associated-with-a-commit
+    const { data: pulls } = await octokit.request(
+      "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls",
+      { owner, repo, commit_sha: sha, request }
+    );
+    const pull = pulls.find((p) => p.merged_at) || pulls[0];
+    if (!pull) {
+      toolkit.info(`No pull request found for ${sha}, not commenting`);
+      return;
+    }
+    await octokit.request(
+      "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
+      { owner, repo, issue_number: pull.number, body, request }
+    );
+    toolkit.info(`Commented on pull request #${pull.number}`);
+    return pull.number;
+  } catch (error) {
+    toolkit.warning(
+      `Could not comment on the pull request for ${sha}: ${
+        error.status ? `${error.status} ` : ""
+      }${error.message}`
+    );
+  }
+}
+
+module.exports.tweetedComment = tweetedComment;
+module.exports.failedComment = failedComment;
+
+// 2026-10-16T18:00:00.000Z -> 2026-10-16 18:00 UTC
+const formatTime = (date) =>
+  date.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+
+/** the comment for a published tweet (or thread) */
+function tweetedComment(urls, scheduled) {
+  const when = scheduled ? `, as scheduled for ${formatTime(scheduled)}` : "";
+  return `🐦 Tweeted${when}:\n\n- ${urls.join("\n- ")}`;
+}
+
+/** the comment for a tweet that could not be published */
+function failedComment(filename, message, hint) {
+  const quoted = String(message).split("\n").join("\n> ");
+  return `⚠️ Tweeting \`${filename}\` failed:\n\n> ${quoted}${
+    hint ? `\n\n${hint}` : ""
+  }`;
+}
+
+
+/***/ }),
+
 /***/ 2179:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -1467,6 +1536,11 @@ const isSetupDone = __nccwpck_require__(5089);
 const setup = __nccwpck_require__(9104);
 const tweet = __nccwpck_require__(2179);
 const formatError = __nccwpck_require__(863);
+const commentOnPullRequest = __nccwpck_require__(5453);
+const {
+  tweetedComment,
+  failedComment,
+} = __nccwpck_require__(5453);
 
 const parseTweetFileContent = __nccwpck_require__(5935);
 const { readLedger, writeLedger } = __nccwpck_require__(5451);
@@ -1491,7 +1565,11 @@ async function handlePush(state) {
 
   // on request errors, log the requset options and error, then end process
   octokit.hook.error("request", (error, options) => {
-    if (options.request.expectStatus === error.status) {
+    // expected, or handled by the caller (see pull-request-comment.js)
+    if (
+      options.request.expectStatus === error.status ||
+      options.request.bestEffort
+    ) {
       throw error;
     }
 
@@ -1516,6 +1594,7 @@ async function handlePush(state) {
   // post all the tweets
   const tweetUrls = [];
   const tweetErrors = [];
+  const failedFiles = [];
   const scheduled = [];
   for (let i = 0; i < newTweets.length; i++) {
     try {
@@ -1555,11 +1634,25 @@ async function handlePush(state) {
       console.log(`error`);
       console.log(failure);
       tweetErrors.push(failure);
+      failedFiles.push(newTweets[i].filename);
     }
   }
 
   if (tweetUrls.length) {
     await addComment(state, "Tweeted:\n\n- " + tweetUrls.join("\n- "));
+  }
+
+  // and on the pull request that was merged, where people look
+  const sha = payload.head_commit.id;
+  if (tweetUrls.length) {
+    await commentOnPullRequest(state, sha, tweetedComment(tweetUrls));
+  }
+  for (let i = 0; i < tweetErrors.length; i++) {
+    await commentOnPullRequest(
+      state,
+      sha,
+      failedComment(failedFiles[i], formatError(tweetErrors[i]))
+    );
   }
 
   if (scheduled.length) {
@@ -1855,6 +1948,11 @@ const { inspect } = __nccwpck_require__(3837);
 
 const tweet = __nccwpck_require__(2179);
 const formatError = __nccwpck_require__(863);
+const commentOnPullRequest = __nccwpck_require__(5453);
+const {
+  tweetedComment,
+  failedComment,
+} = __nccwpck_require__(5453);
 const parseTweetFileContent = __nccwpck_require__(5935);
 
 const git = __nccwpck_require__(3301);
@@ -1887,7 +1985,12 @@ async function handleSchedule(state) {
 
   // on request errors, log the request options and error, then end process
   octokit.hook.error("request", (error, options) => {
-    if (options.request.expectStatus === error.status) throw error;
+    // expected, or handled by the caller (see pull-request-comment.js)
+    if (
+      options.request.expectStatus === error.status ||
+      options.request.bestEffort
+    )
+      throw error;
     toolkit.info(error);
     toolkit.setFailed(error.stack);
     process.exit();
@@ -2058,11 +2161,27 @@ async function handleSchedule(state) {
         "Published",
         urls.join("\n")
       );
+      // the commit that added the file belongs to the tweet's pull request
+      const pull = await commentOnPullRequest(
+        state,
+        sha,
+        tweetedComment(urls, item.schedule)
+      );
+      if (pull) entry.pullRequest = pull;
     } catch (error) {
       const failure = Array.isArray(error) ? error[0] : error;
       toolkit.error(inspect(failure));
       fail(formatError(failure));
       await completeRecord(state, record.id, "failure", "Failed", entry.error);
+      await commentOnPullRequest(
+        state,
+        sha,
+        failedComment(
+          item.filename,
+          entry.error,
+          "To retry, push a fix to the file."
+        )
+      );
     }
   }
 

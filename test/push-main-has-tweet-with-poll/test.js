@@ -56,7 +56,13 @@ nock("https://api.github.com", {
       return true;
     }
   )
-  .reply(201);
+  .reply(201)
+
+  // pushed straight to main: no pull request to comment on
+  .get(
+    "/repos/twitter-together/action/commits/0000000000000000000000000000000000000002/pulls"
+  )
+  .reply(200, []);
 
 nock("https://api.twitter.com")
   .get("/2/users/me")

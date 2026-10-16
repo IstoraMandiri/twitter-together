@@ -162,6 +162,10 @@ _(Tweets can also be invoked locally by calling the script with the `--file` fla
 
 When triggered by the `push` event, the script looks for added `*.tweet` files in the `tweets/` folder or subfolders. If there are any, a tweet for each added tweet file is published.
 
+Once a tweet is published (right away, or later by the scheduled workflow), the pull request that added it gets a
+comment with the link to the tweet, or with the error if publishing failed. This needs `pull-requests: write` for
+the job's token; without it, or for tweets pushed without a pull request, the comment is skipped.
+
 If there is no `tweets/` subfolder, the script opens a pull request creating the folder with further instructions.
 
 ### The `pull_request` event

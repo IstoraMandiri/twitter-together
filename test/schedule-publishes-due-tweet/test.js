@@ -87,6 +87,7 @@ nock("https://api.github.com", {
     const entry = decode(body.content)["tweets/scheduled.tweet"];
     tap.equal(entry.status, "published");
     tap.same(entry.urls, ["https://x.com/gr2m/status/0000000000000000002"]);
+    tap.equal(entry.pullRequest, 12);
     tap.equal(
       entry.record,
       "https://github.com/twitter-together/action/runs/77"
@@ -144,6 +145,20 @@ nock("https://api.github.com", {
     tap.match(body.output.summary, /x\.com\/gr2m\/status/);
     return true;
   })
-  .reply(200, { id: 77 });
+  .reply(200, { id: 77 })
+  // comment on the tweet's pull request
+  .get(
+    "/repos/twitter-together/action/commits/add0000000000000000000000000000000000000/pulls"
+  )
+  .reply(200, [{ number: 12, merged_at: "2020-01-02T00:00:00Z" }])
+  .post("/repos/twitter-together/action/issues/12/comments", (body) => {
+    const at = SCHEDULED.toISOString().slice(0, 16).replace("T", " ");
+    tap.equal(
+      body.body,
+      `🐦 Tweeted, as scheduled for ${at} UTC:\n\n- https://x.com/gr2m/status/0000000000000000002`
+    );
+    return true;
+  })
+  .reply(201);
 
 require("../../lib");
