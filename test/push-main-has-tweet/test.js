@@ -56,6 +56,23 @@ nock("https://api.github.com", {
       return true;
     }
   )
+  .reply(201)
+
+  // and on the merged pull request
+  .get(
+    "/repos/twitter-together/action/commits/0000000000000000000000000000000000000002/pulls"
+  )
+  .reply(200, [
+    { number: 7, merged_at: null },
+    { number: 8, merged_at: "2020-01-02T00:00:00Z" },
+  ])
+  .post("/repos/twitter-together/action/issues/8/comments", (body) => {
+    tap.equal(
+      body.body,
+      "🐦 Tweeted:\n\n- https://x.com/gr2m/status/0000000000000000001"
+    );
+    return true;
+  })
   .reply(201);
 
 nock("https://api.twitter.com")

@@ -113,6 +113,18 @@ nock("https://api.github.com", {
     tap.match(body.output.summary, /You can only reply to or quote posts/);
     return true;
   })
-  .reply(200, { id: 77 });
+  .reply(200, { id: 77 })
+  // tell the pull request, with how to retry
+  .get(
+    "/repos/twitter-together/action/commits/add0000000000000000000000000000000000000/pulls"
+  )
+  .reply(200, [{ number: 13, merged_at: "2020-01-02T00:00:00Z" }])
+  .post("/repos/twitter-together/action/issues/13/comments", (body) => {
+    tap.match(body.body, /^⚠️ Tweeting `tweets\/failing.tweet` failed:\n\n> /);
+    tap.match(body.body, /You can only reply to or quote posts/);
+    tap.match(body.body, /To retry, push a fix to the file\.$/);
+    return true;
+  })
+  .reply(201);
 
 require("../../lib");

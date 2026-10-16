@@ -52,6 +52,20 @@ nock("https://api.github.com", {
       return true;
     }
   )
+  .reply(201)
+
+  // and on the pull request
+  .get(
+    "/repos/twitter-together/action/commits/0000000000000000000000000000000000000002/pulls"
+  )
+  .reply(200, [{ number: 9, merged_at: "2020-01-02T00:00:00Z" }])
+  .post("/repos/twitter-together/action/issues/9/comments", (body) => {
+    tap.equal(
+      body.body,
+      "⚠️ Tweeting `tweets/cupcake-ipsum.tweet` failed:\n\n> Tweet exceeds maximum length of 280 characters by 166 characters"
+    );
+    return true;
+  })
   .reply(201);
 
 process.on("exit", (code) => {
